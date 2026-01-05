@@ -1,7 +1,7 @@
 ---
 description: "启动 SoloLoop 迭代循环"
 argument-hint: "PROMPT [--max N] [--promise TEXT]"
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-sololoop.sh)"]
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-sololoop.sh:*)"]
 ---
 
 # SoloLoop 命令
