@@ -1,14 +1,17 @@
 {
-  "name": "SoloLoop Marketplace",
+  "name": "sololoop-marketplace",
   "description": "SoloLoop 迭代循环插件 - 让 Claude 在同一任务上持续迭代直到完成",
+  "owner": "maxlee",
   "plugins": [
     {
       "name": "sololoop",
       "description": "简化版迭代循环插件 - 让 Claude 在同一任务上持续迭代直到完成",
       "version": "1.0.0",
-      "author": "Max Lee",
+      "author": {
+        "name": "Max Lee"
+      },
       "repository": "https://github.com/maxlee/sololoop",
-      "installUrl": "https://github.com/maxlee/sololoop",
+      "source": "https://github.com/maxlee/sololoop",
       "keywords": ["loop", "iteration", "automation", "ralph-wiggum"]
     }
   ]
