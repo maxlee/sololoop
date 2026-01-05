@@ -37,6 +37,17 @@ Stop Hook 拦截，反馈相同 prompt
 /sololoop:sololoop "你的任务描述" --max 10
 ```
 
+用户需要在 ~/.claude/settings.json 中添加权限:
+```bash
+{
+  "permissions": {
+    "allow": [
+      "Bash(~/.claude/plugins/cache/sololoop-marketplace/sololoop/*/scripts/*:*)"
+    ]
+  }
+}
+```
+
 ### 🚀 方式 B：克隆后本地安装
 
 ```bash

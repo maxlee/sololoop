@@ -1,6 +1,6 @@
 ---
 description: "取消 SoloLoop 迭代循环"
-allowed-tools: ["Bash"]
+allowed-tools: ["Bash(*)"]
 ---
 
 # 取消 SoloLoop 循环
