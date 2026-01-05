@@ -29,23 +29,12 @@ Stop Hook 拦截，反馈相同 prompt
 /plugin marketplace add maxlee/sololoop
 
 # 2. 安装插件
-/plugin install sololoop
+/plugin install sololoop@sololoop-marketplace
 ```
 
 安装后直接使用：
 ```bash
 /sololoop:sololoop "你的任务描述" --max 10
-```
-
-用户需要在 ~/.claude/settings.json 中添加权限:
-```bash
-{
-  "permissions": {
-    "allow": [
-      "Bash(~/.claude/plugins/cache/sololoop-marketplace/sololoop/*/scripts/*:*)"
-    ]
-  }
-}
 ```
 
 ### 🚀 方式 B：克隆后本地安装
@@ -74,19 +63,6 @@ claude --dangerously-skip-permissions --plugin-dir /path/to/sololoop
 
 ```bash
 claude --plugin-dir /path/to/sololoop
-```
-
-首次使用时需要手动授权，或在 `~/.claude/settings.json` 中添加权限：
-
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(/path/to/sololoop/scripts/setup-sololoop.sh:*)",
-      "Bash(/path/to/sololoop/scripts/cancel-sololoop.sh:*)"
-    ]
-  }
-}
 ```
 
 #### 方式 C：调试模式
@@ -144,7 +120,8 @@ claude --debug --plugin-dir /path/to/sololoop
 ```
 sololoop/
 ├── .claude-plugin/
-│   └── plugin.json          # 插件元数据
+│   ├── plugin.json          # 插件元数据（必需）
+│   └── marketplace.json     # Marketplace 配置
 ├── commands/
 │   ├── sololoop.md          # 启动命令
 │   └── cancel-sololoop.md   # 取消命令
@@ -166,10 +143,228 @@ sololoop/
 | 循环没有启动 | 检查 prompt 是否为空，--max 是否为正整数 |
 | 循环没有停止 | 运行 `/sololoop:cancel-sololoop` 或删除 `.claude/sololoop.local.md` |
 
-## 参考
+---
 
-- [Claude Code Hooks 文档](https://code.claude.com/docs/en/hooks)
+## 插件开发参考文档
+
+以下是从 [Claude Code 官方文档](https://code.claude.com/docs/en/plugins) 整理的插件开发关键信息。
+
+### 插件目录结构
+
+```
+plugin-name/
+├── .claude-plugin/
+│   └── plugin.json          # 必需：插件元数据
+├── commands/                 # 斜杠命令 Markdown 文件
+├── agents/                   # 自定义 agent 定义
+├── skills/                   # Agent Skills（含 SKILL.md）
+├── hooks/
+│   └── hooks.json           # Hook 配置
+├── .mcp.json                # MCP 服务器配置
+└── .lsp.json                # LSP 服务器配置
+```
+
+### plugin.json 完整 Schema
+
+```json
+{
+  "name": "plugin-name",           // 必需：唯一标识符（kebab-case）
+  "version": "1.2.0",              // 语义化版本
+  "description": "插件描述",
+  "author": {
+    "name": "作者名",
+    "email": "email@example.com",
+    "url": "https://github.com/author"
+  },
+  "homepage": "https://docs.example.com/plugin",
+  "repository": "https://github.com/author/plugin",
+  "license": "MIT",
+  "keywords": ["keyword1", "keyword2"],
+  "commands": ["./custom/commands/special.md"],
+  "agents": "./custom/agents/",
+  "skills": "./custom/skills/",
+  "hooks": "./config/hooks.json",
+  "mcpServers": "./mcp-config.json",
+  "lspServers": "./.lsp.json"
+}
+```
+
+### 命令文件 Frontmatter
+
+命令文件支持以下 frontmatter 字段：
+
+| 字段 | 用途 | 默认值 |
+|------|------|--------|
+| `description` | 命令简述 | 使用 prompt 第一行 |
+| `allowed-tools` | 命令可用的工具列表 | 继承会话设置 |
+| `argument-hint` | 参数提示 | 无 |
+| `model` | 指定模型 | 继承会话设置 |
+| `disable-model-invocation` | 禁止 SlashCommand 工具调用 | false |
+
+### allowed-tools 格式
+
+```yaml
+# 单个工具
+allowed-tools: Read
+
+# 多个工具（逗号分隔字符串）
+allowed-tools: Read, Write, Edit
+
+# 多个工具（数组格式）
+allowed-tools:
+  - Read
+  - Write
+  - Bash(git:*)
+
+# Bash 命令过滤器
+allowed-tools: Bash(git:*)              # 只允许 git 命令
+allowed-tools: Bash(*)                  # 允许所有 bash 命令
+allowed-tools: Bash(git status:*)       # 只允许 git status
+
+# 通配符
+allowed-tools: "*"                      # 允许所有工具
+
+# ❌ 错误格式
+allowed-tools: Bash                     # 缺少命令过滤器
+```
+
+### 命令中执行 Bash
+
+使用 `!` 前缀执行 bash 命令，输出会包含在命令上下文中：
+
+```markdown
+---
+description: 分析代码质量
+allowed-tools: Bash(node:*)
+---
+
+分析结果: !`node ${CLAUDE_PLUGIN_ROOT}/scripts/analyze.js $1`
+```
+
+### 环境变量
+
+- `${CLAUDE_PLUGIN_ROOT}`: 插件目录的绝对路径
+- `${CLAUDE_PROJECT_DIR}`: 项目目录路径（仅在 hook 中可用）
+
+### Hook 配置
+
+hooks.json 结构：
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+支持的 Hook 事件：
+- `PreToolUse`: 工具调用前
+- `PostToolUse`: 工具调用后
+- `UserPromptSubmit`: 用户提交 prompt 时
+- `Stop`: 主 agent 完成响应时
+- `SubagentStop`: 子 agent 完成时
+- `SessionStart`: 会话开始时
+- `SessionEnd`: 会话结束时
+
+### Stop Hook 输出格式
+
+```json
+{
+  "decision": "block",
+  "reason": "继续迭代的 prompt 内容"
+}
+```
+
+### Marketplace 配置
+
+.claude-plugin/marketplace.json：
+
+```json
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "marketplace-name",
+  "description": "Marketplace 描述",
+  "owner": {
+    "name": "Owner Name",
+    "email": "email@example.com"
+  },
+  "plugins": [
+    {
+      "name": "plugin-name",
+      "description": "插件描述",
+      "category": "productivity",
+      "source": "./",
+      "homepage": "https://github.com/user/plugin",
+      "tags": ["tag1", "tag2"]
+    }
+  ]
+}
+```
+
+### 插件安装作用域
+
+| 作用域 | 配置文件 | 用途 |
+|--------|----------|------|
+| user | ~/.claude/settings.json | 个人插件，跨项目可用（默认） |
+| project | .claude/settings.json | 团队插件，通过版本控制共享 |
+| local | .claude/settings.local.json | 项目特定，gitignore |
+
+### CLI 命令
+
+```bash
+# 安装插件
+claude plugin install <plugin>@<marketplace> [--scope user|project|local]
+
+# 卸载插件
+claude plugin uninstall <plugin> [--scope user|project|local]
+
+# 启用/禁用插件
+claude plugin enable <plugin>
+claude plugin disable <plugin>
+
+# 更新插件
+claude plugin update <plugin>
+```
+
+### 调试
+
+```bash
+# 查看插件加载详情
+claude --debug
+
+# 直接加载本地插件目录
+claude --plugin-dir /path/to/plugin
+```
+
+### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| 插件未加载 | plugin.json 无效 | 验证 JSON 语法 |
+| 命令不显示 | 目录结构错误 | 确保 commands/ 在插件根目录 |
+| Hook 不触发 | 脚本不可执行 | 运行 `chmod +x script.sh` |
+| MCP 服务器失败 | 路径错误 | 使用 `${CLAUDE_PLUGIN_ROOT}` |
+| 路径错误 | 使用绝对路径 | 所有路径必须相对且以 `./` 开头 |
+
+---
+
+## 参考链接
+
 - [Claude Code Plugins 文档](https://code.claude.com/docs/en/plugins)
+- [Plugins Reference](https://code.claude.com/docs/en/plugins-reference)
+- [Slash Commands](https://code.claude.com/docs/en/slash-commands)
+- [Hooks Reference](https://code.claude.com/docs/en/hooks)
+- [Plugin Marketplaces](https://code.claude.com/docs/en/plugin-marketplaces)
 - [Ralph Wiggum 原始技术](https://ghuntley.com/ralph/)
 
 ## License

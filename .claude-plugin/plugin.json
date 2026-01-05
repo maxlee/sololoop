@@ -1,6 +1,6 @@
 {
   "name": "sololoop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "简化版迭代循环插件 - 让 Claude 在同一任务上持续迭代直到完成",
   "author": {
     "name": "Max Lee"

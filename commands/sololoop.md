@@ -1,7 +1,7 @@
 ---
 description: "启动 SoloLoop 迭代循环"
 argument-hint: "PROMPT [--max N] [--promise TEXT]"
-allowed-tools: ["Bash(*)"]
+allowed-tools: Bash(*)
 ---
 
 # SoloLoop 命令
