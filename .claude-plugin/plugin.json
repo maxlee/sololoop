@@ -1,12 +1,13 @@
 {
   "name": "sololoop",
-  "version": "1.0.3",
-  "description": "简化版迭代循环插件 - 让 Claude 在同一任务上持续迭代直到完成",
+  "version": "3.0.0",
+  "description": "迭代循环插件 - 让 Claude 在任务上持续迭代直到完成",
   "author": {
-    "name": "Max Lee"
+    "name": "maxlee",
+    "url": "https://github.com/maxlee/sololoop"
   },
-  "keywords": ["loop", "iteration", "automation"],
-  "hooks": "./hooks/hooks.json",
   "repository": "https://github.com/maxlee/sololoop",
-  "homepage": "https://github.com/maxlee/sololoop"
+  "license": "MIT",
+  "keywords": ["iteration", "loop", "planning", "productivity"],
+  "hooks": "./hooks/hooks.json"
 }

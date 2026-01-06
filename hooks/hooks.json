@@ -1,14 +1,9 @@
 {
-  "description": "SoloLoop 插件 Stop Hook - 用于迭代循环",
   "hooks": {
     "Stop": [
       {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh"
-          }
-        ]
+        "type": "command",
+        "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh"
       }
     ]
   }

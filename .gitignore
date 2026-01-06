@@ -1,0 +1,17 @@
+# SoloLoop 运行时状态文件
+.claude/sololoop.local.md
+
+# 规划文件模式生成的文件（用户项目中的工作文件）
+task_plan.md
+notes.md
+deliverable.md
+
+# 开发文档和规划
+.kiro/
+TRD.md
+
+# 测试文件
+tests/
+
+# macOS
+.DS_Store
