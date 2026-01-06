@@ -161,6 +161,7 @@ fi
 # ----------------------------------------------------------------------------
 # 复选框进度检查 - Requirements 3.1, 3.2, 2.4
 # 注意：这里只计算进度，不直接退出。退出条件在后面统一判断
+# 规划模式隔离：只有当 plan_mode=true 时才读取和检查规划文件
 # ----------------------------------------------------------------------------
 CHECKBOX_TOTAL=0
 CHECKBOX_CHECKED=0
@@ -168,6 +169,8 @@ CHECKBOX_PERCENTAGE=0
 PROGRESS_INFO=""
 ALL_CHECKBOXES_CHECKED=false
 
+# 规划模式隔离 - Requirements 2.1, 2.3 (plan-mode-isolation)
+# 只有当 plan_mode=true 时才读取 .sololoop/task_plan.md
 if [[ "$PLAN_MODE" == "true" ]]; then
   if [[ -f "$TASK_PLAN_FILE" ]]; then
     # 计算复选框数量 - 匹配 "- [ ]" 和 "- [x]" 或 "- [X]"
@@ -191,6 +194,7 @@ if [[ "$PLAN_MODE" == "true" ]]; then
     PROGRESS_INFO="进度: .sololoop/task_plan.md 不存在"
   fi
 fi
+# 当 plan_mode=false 时，完全跳过规划文件读取，不设置任何进度信息
 
 # ----------------------------------------------------------------------------
 # 严格退出条件判断 - Requirements 3.2, 3.3, 3.6, 3.7
@@ -311,13 +315,17 @@ if [[ "$PLAN_MODE" == "true" ]]; then
 
 📋 请检查 .sololoop/task_plan.md 更新进度，完成的任务请勾选复选框。"
 else
-  # 非 plan_mode
+  # 非 plan_mode - 规划模式隔离 Requirements 2.2, 2.4 (plan-mode-isolation)
+  # 不包含进度信息，不包含 .sololoop/ 文件引用
   if [[ "$COMPLETION_PROMISE" != "null" ]] && [[ -n "$COMPLETION_PROMISE" ]]; then
     ITERATION_INFO="${INTERRUPTION_PREFIX}🔄 SoloLoop 迭代 $NEXT_ITERATION/$MAX_ITERATIONS | 完成后输出: <promise>$COMPLETION_PROMISE</promise>"
   else
     ITERATION_INFO="${INTERRUPTION_PREFIX}🔄 SoloLoop 迭代 $NEXT_ITERATION/$MAX_ITERATIONS"
   fi
-  PLAN_REMINDER=""
+  # 添加规划模式隔离提示 - Requirements 2.2, 2.4 (plan-mode-isolation)
+  PLAN_REMINDER="
+
+📌 注意：本次任务未启用规划模式，请勿修改 .sololoop/ 目录下的任何文件。"
 fi
 
 # ----------------------------------------------------------------------------

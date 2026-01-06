@@ -222,6 +222,14 @@ EOF
 fi
 
 # ----------------------------------------------------------------------------
+# 非规划模式下检测已存在的规划目录（Requirements 1.1, 1.3）
+# ----------------------------------------------------------------------------
+EXISTING_PLANNING_DIR_WARNING=false
+if [[ "$PLAN_MODE" == "false" ]] && [[ -d "$PLANNING_DIR" ]]; then
+  EXISTING_PLANNING_DIR_WARNING=true
+fi
+
+# ----------------------------------------------------------------------------
 # 输出启动信息
 # ----------------------------------------------------------------------------
 echo "🔄 SoloLoop v3 循环已启动！"
@@ -235,6 +243,15 @@ if [[ "$PLAN_MODE" == "true" ]]; then
   echo "规划目录：$PLANNING_DIR/"
   echo "规划文件：$PLANNING_FILES_STATUS"
 fi
+
+# 非规划模式下显示已存在规划目录的警告（Requirements 1.1, 1.3）
+if [[ "$EXISTING_PLANNING_DIR_WARNING" == "true" ]]; then
+  echo ""
+  echo "⚠️ 检测到已存在的规划文件目录: $PLANNING_DIR/"
+  echo "   本次任务未启用规划模式 (--plan)，请勿修改该目录下的文件。"
+  echo "   如需使用规划模式，请添加 --plan 参数重新启动。"
+fi
+
 echo ""
 echo "📋 完成条件："
 echo "  - 达到最大迭代次数 ($MAX_ITERATIONS)"
@@ -252,4 +269,10 @@ echo "$PROMPT"
 if [[ "$PLAN_MODE" == "true" ]]; then
   echo ""
   echo "💡 提示：请先查看 $PLANNING_DIR/task_plan.md 了解任务进度，完成后勾选对应复选框。"
+fi
+
+# 非规划模式下的明确指令（Requirements 1.2, 1.4）
+if [[ "$PLAN_MODE" == "false" ]]; then
+  echo ""
+  echo "📌 注意：本次任务未启用规划模式，请勿修改 .sololoop/ 目录下的任何文件。"
 fi
