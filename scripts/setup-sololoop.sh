@@ -26,6 +26,7 @@ PROMPT_PARTS=()
 MAX_ITERATIONS=10
 COMPLETION_PROMISE=""
 PLAN_MODE=false
+SPEC_STRICT=false
 PLANNING_DIR=".sololoop"
 
 # ----------------------------------------------------------------------------
@@ -35,7 +36,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     -h|--help)
       cat << 'EOF'
-SoloLoop v3 - 迭代循环插件（支持规划文件）
+SoloLoop v4 - 规格驱动迭代循环插件
 
 用法：
   /sololoop:sololoop "任务描述" [选项]
@@ -44,18 +45,26 @@ SoloLoop v3 - 迭代循环插件（支持规划文件）
   --max <n>       最大迭代次数（默认：10）
   --promise <t>   完成标记（多词需加引号）
   --plan          启用规划文件模式（创建 .sololoop/ 目录下的规划文件）
+  --spec          启用严格规格模式（需要 --plan，强制遵循 Requirements 和 Acceptance Criteria）
   -h, --help      显示帮助
 
 示例：
   /sololoop:sololoop "实现登录功能" --max 5
   /sololoop:sololoop "重构代码" --promise "DONE" --max 20
   /sololoop:sololoop "开发新功能" --plan --max 15
+  /sololoop:sololoop "开发新功能" --plan --spec --max 15
 
-停止方式：
-  - 达到最大迭代次数
-  - 输出 <promise>完成标记</promise>
-  - 所有 .sololoop/task_plan.md 复选框完成（--plan 模式）
-  - 运行 /sololoop:cancel-sololoop
+退出条件（按优先级）：
+  1. 所有 .sololoop/task_plan.md 复选框完成（--plan 模式）
+  2. 输出 <promise>完成标记</promise>
+  3. 达到最大迭代次数
+  4. 运行 /sololoop:cancel-sololoop
+
+严格模式说明：
+  --spec 启用后，Claude 将严格遵循 task_plan.md 中的：
+  - Requirements: 需求定义
+  - Acceptance Criteria: 验收标准
+  - Test Cases: 测试用例
 EOF
       exit 0
       ;;
@@ -79,6 +88,10 @@ EOF
       PLAN_MODE=true
       shift
       ;;
+    --spec)
+      SPEC_STRICT=true
+      shift
+      ;;
     *)
       PROMPT_PARTS+=("$1")
       shift
@@ -94,6 +107,14 @@ if [[ -z "$PROMPT" ]]; then
   echo "❌ 错误：请提供任务描述" >&2
   echo "示例：/sololoop:sololoop \"实现登录功能\" --max 5" >&2
   exit 1
+fi
+
+# ----------------------------------------------------------------------------
+# 验证 --spec 需要 --plan 模式
+# ----------------------------------------------------------------------------
+if [[ "$SPEC_STRICT" == "true" ]] && [[ "$PLAN_MODE" == "false" ]]; then
+  echo "⚠️ 警告：--spec 需要 --plan 模式，已自动忽略 --spec 参数" >&2
+  SPEC_STRICT=false
 fi
 
 # ----------------------------------------------------------------------------
@@ -114,6 +135,7 @@ iteration: 1
 max_iterations: $MAX_ITERATIONS
 completion_promise: $PROMISE_YAML
 plan_mode: $PLAN_MODE
+spec_strict: $SPEC_STRICT
 started_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 interruption_count: 0
 last_interruption_type: null
@@ -147,14 +169,33 @@ if [[ "$PLAN_MODE" == "true" ]]; then
 EOF
     PLANNING_FILES_STATUS="$PLANNING_DIR/task_plan.md (已存在，追加新会话)"
   else
+    # v4: 生成增强 Spec 模板，包含 Requirements、Acceptance Criteria、Test Cases、Phases、Change Log
     cat > "$PLANNING_DIR/task_plan.md" << EOF
-# Task Plan
+# Task Specification
 
 Started: $TIMESTAMP
 
 ## Task
 
 $PROMPT
+
+## Requirements
+
+- REQ-1: $PROMPT
+
+## Acceptance Criteria
+
+- [ ] AC-1: 验证核心功能实现
+- [ ] AC-2: 验证边界情况处理
+- [ ] AC-3: 验证错误处理
+
+## Test Cases
+
+| ID | Input | Expected Output | Status |
+|----|-------|-----------------|--------|
+| TC-1 | 正常输入 | 预期输出 | ⬜ |
+| TC-2 | 边界输入 | 预期输出 | ⬜ |
+| TC-3 | 异常输入 | 错误处理 | ⬜ |
 
 ## Phases
 
@@ -163,6 +204,12 @@ $PROMPT
 - [ ] Phase 3: 实现核心功能
 - [ ] Phase 4: 测试验证
 - [ ] Phase 5: 文档和清理
+
+## Change Log
+
+| Timestamp | Change |
+|-----------|--------|
+| $TIMESTAMP | Initial spec created |
 EOF
     PLANNING_FILES_STATUS="$PLANNING_DIR/task_plan.md (新建)"
   fi
@@ -232,7 +279,7 @@ fi
 # ----------------------------------------------------------------------------
 # 输出启动信息
 # ----------------------------------------------------------------------------
-echo "🔄 SoloLoop v3 循环已启动！"
+echo "🔄 SoloLoop v4 循环已启动！"
 echo ""
 echo "迭代：1 / $MAX_ITERATIONS"
 if [[ -n "$COMPLETION_PROMISE" ]]; then
@@ -240,6 +287,9 @@ if [[ -n "$COMPLETION_PROMISE" ]]; then
 fi
 if [[ "$PLAN_MODE" == "true" ]]; then
   echo "规划模式：已启用"
+  if [[ "$SPEC_STRICT" == "true" ]]; then
+    echo "严格模式：已启用 🔒"
+  fi
   echo "规划目录：$PLANNING_DIR/"
   echo "规划文件：$PLANNING_FILES_STATUS"
 fi
@@ -253,13 +303,22 @@ if [[ "$EXISTING_PLANNING_DIR_WARNING" == "true" ]]; then
 fi
 
 echo ""
-echo "📋 完成条件："
-echo "  - 达到最大迭代次数 ($MAX_ITERATIONS)"
-if [[ -n "$COMPLETION_PROMISE" ]]; then
-  echo "  - 输出 <promise>$COMPLETION_PROMISE</promise>"
-fi
+echo "📋 完成条件（按优先级）："
 if [[ "$PLAN_MODE" == "true" ]]; then
-  echo "  - 完成 $PLANNING_DIR/task_plan.md 中所有复选框"
+  echo "  1. 完成 $PLANNING_DIR/task_plan.md 中所有复选框"
+  if [[ -n "$COMPLETION_PROMISE" ]]; then
+    echo "  2. 输出 <promise>$COMPLETION_PROMISE</promise>"
+    echo "  3. 达到最大迭代次数 ($MAX_ITERATIONS)"
+  else
+    echo "  2. 达到最大迭代次数 ($MAX_ITERATIONS)"
+  fi
+else
+  if [[ -n "$COMPLETION_PROMISE" ]]; then
+    echo "  1. 输出 <promise>$COMPLETION_PROMISE</promise>"
+    echo "  2. 达到最大迭代次数 ($MAX_ITERATIONS)"
+  else
+    echo "  1. 达到最大迭代次数 ($MAX_ITERATIONS)"
+  fi
 fi
 echo "  - 运行 /sololoop:cancel-sololoop 取消"
 echo ""
@@ -269,6 +328,12 @@ echo "$PROMPT"
 if [[ "$PLAN_MODE" == "true" ]]; then
   echo ""
   echo "💡 提示：请先查看 $PLANNING_DIR/task_plan.md 了解任务进度，完成后勾选对应复选框。"
+  if [[ "$SPEC_STRICT" == "true" ]]; then
+    echo ""
+    echo "🔒 严格模式已启用："
+    echo "   - 请严格遵循 Requirements 和 Acceptance Criteria"
+    echo "   - 请验证 Test Cases 中定义的测试用例"
+  fi
 fi
 
 # 非规划模式下的明确指令（Requirements 1.2, 1.4）

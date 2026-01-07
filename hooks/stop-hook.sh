@@ -69,11 +69,25 @@ fi
 #   ---
 #   prompt 内容...
 # ----------------------------------------------------------------------------
+# 检查文件是否为空 - Requirements 9.1
+if [[ ! -s "$STATE_FILE" ]]; then
+  echo "⚠️ SoloLoop: 状态文件为空，循环已停止" >&2
+  rm -f "$STATE_FILE"
+  exit 0
+fi
+
 FRONTMATTER=$(sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$STATE_FILE" 2>/dev/null || echo "")
 
-# 处理畸形状态文件 - Requirements 8.5, 12.1
+# 处理畸形状态文件 - Requirements 9.1
 if [[ -z "$FRONTMATTER" ]]; then
   echo "⚠️ SoloLoop: 状态文件损坏（无 frontmatter），循环已停止" >&2
+  rm -f "$STATE_FILE"
+  exit 0
+fi
+
+# 检查 frontmatter 是否包含必需字段 - Requirements 9.1
+if ! echo "$FRONTMATTER" | grep -q '^iteration:' || ! echo "$FRONTMATTER" | grep -q '^max_iterations:'; then
+  echo "⚠️ SoloLoop: 状态文件损坏（缺少必需字段），循环已停止" >&2
   rm -f "$STATE_FILE"
   exit 0
 fi
@@ -84,11 +98,37 @@ COMPLETION_PROMISE=$(echo "$FRONTMATTER" | grep '^completion_promise:' | sed 's/
 PLAN_MODE=$(echo "$FRONTMATTER" | grep '^plan_mode:' | sed 's/plan_mode: *//' || echo "false")
 
 # ----------------------------------------------------------------------------
-# 验证数值字段
-# 如果状态文件损坏，清理并允许退出 - Requirements 8.5, 12.1
+# 解析 spec_strict 字段 - Requirements 2.1, 10.3 (v4)
+# 处理缺失字段的向后兼容：默认为 false
 # ----------------------------------------------------------------------------
+SPEC_STRICT=$(echo "$FRONTMATTER" | grep '^spec_strict:' | sed 's/spec_strict: *//' || echo "false")
+# 处理缺失字段的向后兼容
+if [[ -z "$SPEC_STRICT" ]]; then
+  SPEC_STRICT="false"
+fi
+
+# ----------------------------------------------------------------------------
+# 验证数值字段
+# 如果状态文件损坏，清理并允许退出 - Requirements 9.1
+# 处理：空值、非数字、负数、超大数值等异常情况
+# ----------------------------------------------------------------------------
+# 处理空值情况
+if [[ -z "$ITERATION" ]] || [[ -z "$MAX_ITERATIONS" ]]; then
+  echo "⚠️ SoloLoop: 状态文件损坏（迭代值为空），循环已停止" >&2
+  rm -f "$STATE_FILE"
+  exit 0
+fi
+
+# 处理非数字情况
 if [[ ! "$ITERATION" =~ ^[0-9]+$ ]] || [[ ! "$MAX_ITERATIONS" =~ ^[0-9]+$ ]]; then
-  echo "⚠️ SoloLoop: 状态文件损坏（无效的迭代值），循环已停止" >&2
+  echo "⚠️ SoloLoop: 状态文件损坏 (无效的迭代值: iteration=${ITERATION}, max=${MAX_ITERATIONS}), 循环已停止" >&2
+  rm -f "$STATE_FILE"
+  exit 0
+fi
+
+# 处理不合理的数值范围（防止溢出或无意义的值）
+if [[ "$ITERATION" -lt 0 ]] || [[ "$MAX_ITERATIONS" -lt 1 ]] || [[ "$MAX_ITERATIONS" -gt 10000 ]]; then
+  echo "⚠️ SoloLoop: 状态文件损坏（迭代值超出合理范围），循环已停止" >&2
   rm -f "$STATE_FILE"
   exit 0
 fi
@@ -112,50 +152,71 @@ fi
 # ----------------------------------------------------------------------------
 # 获取 transcript 路径并检查完成标记和中断状态 - Requirements 2.1, 2.3, 12.2
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# 获取 transcript 路径并检查完成标记和中断状态 - Requirements 9.3
+# 处理：缺失的 transcript 文件、JSON 解析失败、jq 不可用
+# ----------------------------------------------------------------------------
 TRANSCRIPT_PATH=""
+JQ_AVAILABLE=false
+
 if command -v jq &>/dev/null; then
+  JQ_AVAILABLE=true
   TRANSCRIPT_PATH=$(echo "$HOOK_INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || echo "")
+else
+  # jq 不可用时使用备用方法解析 - Requirements 9.4
+  TRANSCRIPT_PATH=$(echo "$HOOK_INPUT" | grep -o '"transcript_path"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || echo "")
 fi
 
 PROMISE_MATCHED=false
 INTERRUPTION_DETECTED=false
 
 if [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
-  # 提取最后一条 assistant 消息的文本内容
-  LAST_OUTPUT=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1 | \
-    jq -r '.message.content | map(select(.type == "text")) | map(.text) | join("\n")' 2>/dev/null || echo "")
-  
-  # ----------------------------------------------------------------------------
-  # 中断检测 - Requirements 2.1
-  # 检测 transcript 中的 "Interrupted" 模式
-  # ----------------------------------------------------------------------------
-  if grep -q '"Interrupted"' "$TRANSCRIPT_PATH" 2>/dev/null || \
-     grep -q '"type":"bash_interrupted"' "$TRANSCRIPT_PATH" 2>/dev/null || \
-     grep -qi 'interrupted' "$TRANSCRIPT_PATH" 2>/dev/null | tail -5 | grep -q 'bash'; then
-    # 检查最近的消息是否包含中断信号
-    LAST_MESSAGES=$(tail -10 "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
-    if echo "$LAST_MESSAGES" | grep -qi 'interrupt'; then
-      INTERRUPTION_DETECTED=true
+  # 检查 transcript 文件是否为空 - Requirements 9.3
+  if [[ ! -s "$TRANSCRIPT_PATH" ]]; then
+    echo "⚠️ SoloLoop: transcript 文件为空，跳过完成标记检查" >&2
+  else
+    # 提取最后一条 assistant 消息的文本内容
+    # 使用 || echo "" 处理 JSON 解析失败 - Requirements 9.3
+    if [[ "$JQ_AVAILABLE" == "true" ]]; then
+      LAST_OUTPUT=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1 | \
+        jq -r '.message.content | map(select(.type == "text")) | map(.text) | join("\n")' 2>/dev/null || echo "")
+    else
+      # jq 不可用时的备用方法 - Requirements 9.4
+      LAST_OUTPUT=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1 || echo "")
     fi
-  fi
-  
-  # ----------------------------------------------------------------------------
-  # 严格的 Promise 匹配 - Requirements 3.8
-  # 使用精确字符串匹配 <promise>TEXT</promise> 格式
-  # 不接受部分匹配或变体
-  # ----------------------------------------------------------------------------
-  if [[ "$COMPLETION_PROMISE" != "null" ]] && [[ -n "$COMPLETION_PROMISE" ]] && [[ -n "$LAST_OUTPUT" ]]; then
-    # 使用 grep 进行精确匹配 <promise>EXACT_TEXT</promise>
-    EXACT_PROMISE_PATTERN="<promise>$COMPLETION_PROMISE</promise>"
-    if echo "$LAST_OUTPUT" | grep -qF "$EXACT_PROMISE_PATTERN"; then
-      PROMISE_MATCHED=true
+    
+    # ----------------------------------------------------------------------------
+    # 中断检测 - Requirements 2.1
+    # 检测 transcript 中的 "Interrupted" 模式
+    # ----------------------------------------------------------------------------
+    if grep -q '"Interrupted"' "$TRANSCRIPT_PATH" 2>/dev/null || \
+       grep -q '"type":"bash_interrupted"' "$TRANSCRIPT_PATH" 2>/dev/null || \
+       grep -qi 'interrupted' "$TRANSCRIPT_PATH" 2>/dev/null | tail -5 | grep -q 'bash'; then
+      # 检查最近的消息是否包含中断信号
+      LAST_MESSAGES=$(tail -10 "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
+      if echo "$LAST_MESSAGES" | grep -qi 'interrupt'; then
+        INTERRUPTION_DETECTED=true
+      fi
+    fi
+    
+    # ----------------------------------------------------------------------------
+    # Promise 匹配 - Requirements 3.8
+    # 使用正则匹配 <promise>TEXT</promise> 格式，允许标签内首尾空白
+    # 这样可以容忍 Claude 输出 <promise> DONE </promise> 的情况
+    # ----------------------------------------------------------------------------
+    if [[ "$COMPLETION_PROMISE" != "null" ]] && [[ -n "$COMPLETION_PROMISE" ]] && [[ -n "$LAST_OUTPUT" ]]; then
+      # 使用 grep -E 正则匹配，允许标签内首尾有可选空白
+      if echo "$LAST_OUTPUT" | grep -qE "<promise>[[:space:]]*${COMPLETION_PROMISE}[[:space:]]*</promise>"; then
+        PROMISE_MATCHED=true
+      fi
     fi
   fi
 else
-  # 处理缺失 transcript - Requirements 12.2
+  # 处理缺失 transcript - Requirements 9.3
   if [[ -n "$TRANSCRIPT_PATH" ]] && [[ ! -f "$TRANSCRIPT_PATH" ]]; then
-    echo "⚠️ SoloLoop: transcript 文件不存在，跳过完成标记检查" >&2
+    echo "⚠️ SoloLoop: transcript 文件不存在 ($TRANSCRIPT_PATH)，跳过完成标记检查" >&2
   fi
+  # 如果 transcript_path 为空，静默跳过（正常情况）
 fi
 
 # ----------------------------------------------------------------------------
@@ -173,23 +234,29 @@ ALL_CHECKBOXES_CHECKED=false
 # 只有当 plan_mode=true 时才读取 .sololoop/task_plan.md
 if [[ "$PLAN_MODE" == "true" ]]; then
   if [[ -f "$TASK_PLAN_FILE" ]]; then
-    # 计算复选框数量 - 匹配 "- [ ]" 和 "- [x]" 或 "- [X]"
-    CHECKBOX_TOTAL=$(grep -cE '^\s*-\s*\[[ xX]\]' "$TASK_PLAN_FILE" 2>/dev/null) || CHECKBOX_TOTAL=0
-    CHECKBOX_CHECKED=$(grep -cE '^\s*-\s*\[[xX]\]' "$TASK_PLAN_FILE" 2>/dev/null) || CHECKBOX_CHECKED=0
-    
-    if [[ $CHECKBOX_TOTAL -gt 0 ]]; then
-      CHECKBOX_PERCENTAGE=$((CHECKBOX_CHECKED * 100 / CHECKBOX_TOTAL))
-      PROGRESS_INFO="进度: $CHECKBOX_CHECKED/$CHECKBOX_TOTAL ($CHECKBOX_PERCENTAGE%)"
-      
-      # 标记是否所有复选框都已完成 - Requirements 3.3
-      if [[ $CHECKBOX_CHECKED -ge $CHECKBOX_TOTAL ]]; then
-        ALL_CHECKBOXES_CHECKED=true
-      fi
+    # 检查文件是否为空 - Requirements 9.2
+    if [[ ! -s "$TASK_PLAN_FILE" ]]; then
+      echo "⚠️ SoloLoop: .sololoop/task_plan.md 为空，跳过复选框检查" >&2
+      PROGRESS_INFO="进度: task_plan.md 为空"
     else
-      PROGRESS_INFO="进度: 无复选框"
+      # 计算复选框数量 - 匹配 "- [ ]" 和 "- [x]" 或 "- [X]"
+      CHECKBOX_TOTAL=$(grep -cE '^\s*-\s*\[[ xX]\]' "$TASK_PLAN_FILE" 2>/dev/null) || CHECKBOX_TOTAL=0
+      CHECKBOX_CHECKED=$(grep -cE '^\s*-\s*\[[xX]\]' "$TASK_PLAN_FILE" 2>/dev/null) || CHECKBOX_CHECKED=0
+      
+      if [[ $CHECKBOX_TOTAL -gt 0 ]]; then
+        CHECKBOX_PERCENTAGE=$((CHECKBOX_CHECKED * 100 / CHECKBOX_TOTAL))
+        PROGRESS_INFO="进度: $CHECKBOX_CHECKED/$CHECKBOX_TOTAL ($CHECKBOX_PERCENTAGE%)"
+        
+        # 标记是否所有复选框都已完成 - Requirements 3.3
+        if [[ $CHECKBOX_CHECKED -ge $CHECKBOX_TOTAL ]]; then
+          ALL_CHECKBOXES_CHECKED=true
+        fi
+      else
+        PROGRESS_INFO="进度: 无复选框"
+      fi
     fi
   else
-    # 处理缺失 task_plan.md - Requirements 12.3
+    # 处理缺失 task_plan.md - Requirements 9.2
     echo "⚠️ SoloLoop: .sololoop/task_plan.md 不存在，跳过复选框检查" >&2
     PROGRESS_INFO="进度: .sololoop/task_plan.md 不存在"
   fi
@@ -197,41 +264,82 @@ fi
 # 当 plan_mode=false 时，完全跳过规划文件读取，不设置任何进度信息
 
 # ----------------------------------------------------------------------------
-# 严格退出条件判断 - Requirements 3.2, 3.3, 3.6, 3.7
-# 只有以下两种情况允许退出：
-#   1. Promise 精确匹配 <promise>TEXT</promise>
-#   2. 所有复选框已勾选（plan_mode）
-# 即使达到最大迭代次数，也需要满足上述条件之一才能退出
-# 如果 iteration < max 且无完成条件，必须返回 block
+# Acceptance Criteria 解析 - Requirements 6.1, 6.2, 6.3, 6.4, 9.2 (v4)
+# 仅在 spec_strict=true 且 plan_mode=true 时解析 AC 部分
+# 处理空的 Acceptance Criteria 部分 - Requirements 9.2
+# ----------------------------------------------------------------------------
+AC_TOTAL=0
+AC_CHECKED=0
+AC_UNCHECKED_LIST=""
+ALL_AC_CHECKED=false
+
+if [[ "$SPEC_STRICT" == "true" ]] && [[ "$PLAN_MODE" == "true" ]]; then
+  if [[ -f "$TASK_PLAN_FILE" ]] && [[ -s "$TASK_PLAN_FILE" ]]; then
+    # 提取 Acceptance Criteria 部分的内容
+    # 查找 "## Acceptance Criteria" 到下一个 "##" 之间的内容
+    AC_SECTION=$(awk '/^## Acceptance Criteria/,/^## [^A]/' "$TASK_PLAN_FILE" 2>/dev/null | grep -E '^\s*-\s*\[[ xX]\]' || echo "")
+    
+    if [[ -n "$AC_SECTION" ]]; then
+      # 计算 AC 复选框数量
+      AC_TOTAL=$(echo "$AC_SECTION" | grep -cE '^\s*-\s*\[[ xX]\]' 2>/dev/null) || AC_TOTAL=0
+      AC_CHECKED=$(echo "$AC_SECTION" | grep -cE '^\s*-\s*\[[xX]\]' 2>/dev/null) || AC_CHECKED=0
+      
+      # 提取未完成的 AC 列表 - Requirements 6.2
+      # 注意：grep 无匹配时返回 exit code 1，需要用 || true 处理以避免 pipefail 导致脚本退出
+      AC_UNCHECKED_LIST=$(echo "$AC_SECTION" | grep -E '^\s*-\s*\[ \]' | sed 's/^\s*-\s*\[ \]\s*//' | head -10 || true)
+      
+      # 检查是否所有 AC 都已完成 - Requirements 6.3
+      if [[ $AC_TOTAL -gt 0 ]] && [[ $AC_CHECKED -ge $AC_TOTAL ]]; then
+        ALL_AC_CHECKED=true
+      fi
+    fi
+    # 如果 AC 部分不存在或为空，仅依赖 Phases 复选框判断 - Requirements 6.4, 9.2
+  fi
+  # 如果 task_plan.md 不存在或为空，跳过 AC 检查 - Requirements 9.2
+fi
+
+# ----------------------------------------------------------------------------
+# 多重 OR 退出条件优先级判断 - Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.6 (v4)
+# 按优先级检查退出条件：
+#   1. 复选框全完成 (plan_mode) - 最高优先级
+#   2. Promise 精确匹配 <promise>TEXT</promise>
+#   3. 达到最大迭代次数 - 安全网
+# 记录退出原因以便输出明确的完成提示
 # ----------------------------------------------------------------------------
 
-# 检查是否满足显式完成条件
-EXPLICIT_COMPLETION=false
-COMPLETION_REASON=""
+# 检查是否满足退出条件（按优先级顺序）
+EXIT_ALLOWED=false
+EXIT_REASON=""
 
-if [[ "$PROMISE_MATCHED" == "true" ]]; then
-  EXPLICIT_COMPLETION=true
-  COMPLETION_REASON="检测到完成标记 <promise>$COMPLETION_PROMISE</promise>"
-elif [[ "$ALL_CHECKBOXES_CHECKED" == "true" ]]; then
-  EXPLICIT_COMPLETION=true
-  COMPLETION_REASON="所有任务已完成 ($CHECKBOX_CHECKED/$CHECKBOX_TOTAL)"
+# 优先级 1: 复选框全完成 - Requirements 3.2
+if [[ "$ALL_CHECKBOXES_CHECKED" == "true" ]]; then
+  EXIT_ALLOWED=true
+  EXIT_REASON="所有任务已完成 ($CHECKBOX_CHECKED/$CHECKBOX_TOTAL)"
+# 优先级 2: Promise 精确匹配 - Requirements 3.3
+elif [[ "$PROMISE_MATCHED" == "true" ]]; then
+  EXIT_ALLOWED=true
+  EXIT_REASON="检测到完成标记 <promise>$COMPLETION_PROMISE</promise>"
+# 优先级 3: 达到最大迭代次数（安全网）- Requirements 3.4
+elif [[ $ITERATION -ge $MAX_ITERATIONS ]]; then
+  EXIT_ALLOWED=true
+  EXIT_REASON="已达到最大迭代次数 $MAX_ITERATIONS"
 fi
 
-# 如果满足显式完成条件，允许退出
-if [[ "$EXPLICIT_COMPLETION" == "true" ]]; then
-  echo "✅ SoloLoop: $COMPLETION_REASON"
+# 如果满足退出条件，允许退出并清理状态文件 - Requirements 3.5
+if [[ "$EXIT_ALLOWED" == "true" ]]; then
+  # 输出明确的完成原因 - Requirements 3.6
+  if [[ "$EXIT_REASON" == *"所有任务已完成"* ]]; then
+    echo "✅ SoloLoop: $EXIT_REASON"
+  elif [[ "$EXIT_REASON" == *"检测到完成标记"* ]]; then
+    echo "✅ SoloLoop: $EXIT_REASON"
+  else
+    echo "🛑 SoloLoop: $EXIT_REASON"
+  fi
   rm -f "$STATE_FILE"
   exit 0
 fi
 
-# 检查是否达到最大迭代次数 - Requirements 3.1, 5.4
-if [[ $ITERATION -ge $MAX_ITERATIONS ]]; then
-  echo "🛑 SoloLoop: 已达到最大迭代次数 $MAX_ITERATIONS"
-  rm -f "$STATE_FILE"
-  exit 0
-fi
-
-# 如果 iteration < max 且无完成条件，必须继续迭代 - Requirements 3.2, 3.4, 3.6
+# 如果 iteration < max 且无完成条件，必须继续迭代
 
 # ----------------------------------------------------------------------------
 # 继续循环：更新迭代计数并返回 block 决策 - Requirements 2.5, 2.6
@@ -306,6 +414,11 @@ if [[ "$PLAN_MODE" == "true" ]]; then
     ITERATION_INFO="${INTERRUPTION_PREFIX}🔄 SoloLoop 迭代 $NEXT_ITERATION/$MAX_ITERATIONS"
   fi
   
+  # 添加严格模式标识 - Requirements 5.3 (v4)
+  if [[ "$SPEC_STRICT" == "true" ]]; then
+    ITERATION_INFO="$ITERATION_INFO | 🔒 严格模式"
+  fi
+  
   if [[ "$COMPLETION_PROMISE" != "null" ]] && [[ -n "$COMPLETION_PROMISE" ]]; then
     ITERATION_INFO="$ITERATION_INFO | 完成后输出: <promise>$COMPLETION_PROMISE</promise>"
   fi
@@ -314,6 +427,39 @@ if [[ "$PLAN_MODE" == "true" ]]; then
   PLAN_REMINDER="
 
 📋 请检查 .sololoop/task_plan.md 更新进度，完成的任务请勾选复选框。"
+
+  # ----------------------------------------------------------------------------
+  # 严格模式指令 - Requirements 2.2, 2.3, 5.3, 6.2 (v4)
+  # 当 spec_strict=true 时添加严格模式指令
+  # ----------------------------------------------------------------------------
+  STRICT_MODE_INSTRUCTION=""
+  if [[ "$SPEC_STRICT" == "true" ]]; then
+    STRICT_MODE_INSTRUCTION="
+
+⚠️ 严格模式已启用：
+- 请严格遵循 .sololoop/task_plan.md 中的 Requirements 和 Acceptance Criteria"
+    
+    # 检查是否有 Test Cases 部分 - Requirements 2.3
+    if [[ -f "$TASK_PLAN_FILE" ]]; then
+      HAS_TEST_CASES=$(grep -c '^## Test Cases' "$TASK_PLAN_FILE" 2>/dev/null || echo "0")
+      if [[ "$HAS_TEST_CASES" -gt 0 ]]; then
+        STRICT_MODE_INSTRUCTION="$STRICT_MODE_INSTRUCTION
+- 请验证 Test Cases 中定义的测试用例"
+      fi
+    fi
+    
+    # 添加未完成的 AC 列表 - Requirements 6.2
+    if [[ -n "$AC_UNCHECKED_LIST" ]]; then
+      STRICT_MODE_INSTRUCTION="$STRICT_MODE_INSTRUCTION
+- 未完成的验收标准:"
+      while IFS= read -r ac_item; do
+        if [[ -n "$ac_item" ]]; then
+          STRICT_MODE_INSTRUCTION="$STRICT_MODE_INSTRUCTION
+  - $ac_item"
+        fi
+      done <<< "$AC_UNCHECKED_LIST"
+    fi
+  fi
 else
   # 非 plan_mode - 规划模式隔离 Requirements 2.2, 2.4 (plan-mode-isolation)
   # 不包含进度信息，不包含 .sololoop/ 文件引用
@@ -326,6 +472,7 @@ else
   PLAN_REMINDER="
 
 📌 注意：本次任务未启用规划模式，请勿修改 .sololoop/ 目录下的任何文件。"
+  STRICT_MODE_INSTRUCTION=""
 fi
 
 # ----------------------------------------------------------------------------
@@ -335,4 +482,4 @@ fi
 #   reason: string - 将作为新的 prompt 发送给 Claude
 # ----------------------------------------------------------------------------
 jq -n --arg reason "$ITERATION_INFO$RECOVERY_INSTRUCTION
-$PROMPT_TEXT$PLAN_REMINDER" '{"decision": "block", "reason": $reason}'
+$PROMPT_TEXT$PLAN_REMINDER$STRICT_MODE_INSTRUCTION" '{"decision": "block", "reason": $reason}'

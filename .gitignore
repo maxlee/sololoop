@@ -8,10 +8,13 @@ deliverable.md
 
 # 开发文档和规划
 .kiro/
-TRD.md
+.claude/
 
 # 测试文件
 tests/
 
 # macOS
 .DS_Store
+
+ralph-wiggum
+docs

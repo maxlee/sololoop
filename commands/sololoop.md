@@ -1,6 +1,6 @@
 ---
-description: "启动 SoloLoop 迭代循环 - 支持规划文件模式"
-argument-hint: "PROMPT [--max N] [--promise TEXT] [--plan]"
+description: "启动 SoloLoop 迭代循环 - 支持规格驱动规划模式"
+argument-hint: "PROMPT [--max N] [--promise TEXT] [--plan] [--spec]"
 allowed-tools: Bash(*)
 ---
 
@@ -13,7 +13,8 @@ allowed-tools: Bash(*)
 - `PROMPT`: 任务描述（必需）
 - `--max N`: 最大迭代次数，默认 10
 - `--promise TEXT`: 完成标记文本
-- `--plan`: 启用规划文件模式，创建 task_plan.md、notes.md、deliverable.md
+- `--plan`: 启用规划文件模式，创建增强 Spec 模板
+- `--spec`: 🆕 v4 启用严格规格模式（需配合 `--plan` 使用）
 
 ## 使用示例
 
@@ -37,6 +38,11 @@ allowed-tools: Bash(*)
 /sololoop:sololoop "开发新功能" --plan --max 20
 ```
 
+🆕 v4 启用严格规格模式：
+```
+/sololoop:sololoop "实现用户认证功能" --plan --spec --max 15
+```
+
 ```!
 "${CLAUDE_PLUGIN_ROOT}/scripts/setup-sololoop.sh" $ARGUMENTS
 ```
@@ -45,20 +51,75 @@ allowed-tools: Bash(*)
 
 循环启动后，请开始处理任务。当你尝试退出时，Stop Hook 会将相同的 prompt 反馈回来，让你继续迭代改进。
 
-### 退出条件
+### 退出条件（优先级从高到低）
 
-1. 达到最大迭代次数
-2. 如果设置了完成标记，输出 `<promise>完成标记</promise>` 匹配时退出
-3. 如果启用 `--plan` 模式，当 task_plan.md 中所有复选框都勾选时退出
+1. **计划完成**：如果启用 `--plan` 模式，当 task_plan.md 中所有复选框都勾选时退出
+2. **承诺匹配**：如果设置了完成标记，输出 `<promise>完成标记</promise>` 匹配时退出
+3. **最大迭代**：达到最大迭代次数时强制退出（安全网）
+
+> 💡 v4 优化：退出条件按优先级检查，任务完成优先于最大迭代限制，确保循环及时终止。
 
 ### 规划文件模式 (--plan)
 
 启用后会在 `.sololoop/` 目录创建以下文件：
-- `.sololoop/task_plan.md`: 任务计划，包含阶段和复选框进度
+- `.sololoop/task_plan.md`: 🆕 v4 增强 Spec 模板，包含 Requirements、Acceptance Criteria、Test Cases、Phases
 - `.sololoop/notes.md`: 迭代笔记，追加式记录
 - `.sololoop/deliverable.md`: 交付物文件
 
 每次迭代时请检查 `.sololoop/task_plan.md` 更新进度，勾选已完成的任务。
+
+### 🆕 v4 严格规格模式 (--spec)
+
+启用 `--spec` 参数后，Claude 将严格遵循 spec 中定义的约束：
+
+**功能特性：**
+- 强制遵循 `.sololoop/task_plan.md` 中的 Requirements 和 Acceptance Criteria
+- 自动验证 Test Cases 中定义的测试用例
+- 在 block reason 中列出未完成的验收标准
+
+**使用建议：**
+- 适用于需要高确定性和可验证性的任务
+- 建议先完善 spec 内容再启用严格模式
+- 可配合 `/sololoop:update-spec` 命令中途调整需求
+
+**示例 .sololoop/task_plan.md (v4 增强模板)：**
+```markdown
+# Task Specification
+
+Started: 2026-01-06T10:30:00Z
+
+## Task
+
+用户的任务描述
+
+## Requirements
+
+- REQ-1: 初始需求描述
+
+## Acceptance Criteria
+
+- [ ] AC-1: 可验证的验收条件
+
+## Test Cases
+
+| ID | Input | Expected Output | Status |
+|----|-------|-----------------|--------|
+| TC-1 | ... | ... | ⬜ |
+
+## Phases
+
+- [ ] Phase 1: 分析需求
+- [ ] Phase 2: 设计方案
+- [ ] Phase 3: 实现核心功能
+- [ ] Phase 4: 测试验证
+- [ ] Phase 5: 文档和清理
+
+## Change Log
+
+| Timestamp | Change |
+|-----------|--------|
+| 2026-01-06T10:30:00Z | Initial spec created |
+```
 
 #### ⚠️ 规划文件使用须知
 
@@ -84,3 +145,16 @@ allowed-tools: Bash(*)
 - 连续中断 3 次以上时，会建议替代方案
 
 这确保了工作流不会因为命令中断而停止，无需手动干预。
+
+### 🆕 v4 Spec 更新命令
+
+在迭代过程中可以使用 `/sololoop:update-spec` 命令更新 spec 内容：
+
+```
+/sololoop:update-spec "新增需求：支持用户头像上传"
+```
+
+该命令会：
+- 将新需求追加到 task_plan.md 的 Requirements 部分
+- 在 Change Log 中添加更新时间戳和变更记录
+- 输出确认信息显示更新内容
