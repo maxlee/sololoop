@@ -3,35 +3,36 @@
 Claude Code 迭代循环插件，让 Claude 在同一任务上持续迭代直到完成。
 
 [![GitHub](https://img.shields.io/badge/GitHub-maxlee%2Fsololoop-blue)](https://github.com/maxlee/sololoop)
-[![Version](https://img.shields.io/badge/version-4.0.0-green)](https://github.com/maxlee/sololoop)
+[![Version](https://img.shields.io/badge/version-5.0.0-green)](https://github.com/maxlee/sololoop)
 
 ## 什么是 SoloLoop？
 
 SoloLoop 通过 Stop Hook 机制拦截 Claude 的退出尝试，将相同的 prompt 反复输入，实现自引用的迭代改进。
 
-**v4 新特性**：借鉴 OpenSpec 的 spec-driven development (SDD) 设计，将 `--plan` 模式从"动态文件笔记"演进为"规格驱动规划"，通过结构化的 spec 模板和可选的严格模式，在动态迭代与确定性实现间达到最佳平衡。
+**v5 新特性**：架构重构，回归纯粹的顽强循环引擎。移除内置规格管理功能（`--plan`、`--spec`），将这些职责交给专业工具 OpenSpec 处理。新增 `/sololoop:openspec` 桥接命令实现无缝集成。
 
 ```
-用户运行 /sololoop:sololoop "任务描述" --spec --max 10
+用户运行 /sololoop:sololoop "任务描述" --max 10
     ↓
-Claude 处理任务（严格遵循 spec 约束）
+Claude 处理任务
     ↓
 Claude 尝试退出
     ↓
-Stop Hook 拦截，检查进度、验收标准和复选框
+Stop Hook 拦截，检查进度
     ↓
 重复直到完成或达到最大迭代次数
 ```
 
-### v4 核心升级
+### v5 核心变更
 
-| 特性 | v3 | v4 |
+| 特性 | v4 | v5 |
 |------|----|----|
-| Spec 模板 | 基础 Phases | 增强结构：Requirements、AC、Test Cases、Phases |
-| 规格模式 | 无 | `--spec` 严格遵循 spec 约束 |
-| 退出条件 | 隐式优先级 | 显式优先级：计划完成 > Promise > 最大迭代 |
-| Spec 更新 | 无 | `/sololoop:update-spec` 中途调整需求 |
-| 验收标准 | 无 | 解析 AC 复选框，列出未完成项 |
+| 架构理念 | All-in-one | 职责分离（轻量循环引擎） |
+| 规格管理 | 内置 `--plan`/`--spec` | 外部 OpenSpec 集成 |
+| 桥接命令 | 无 | `/sololoop:openspec` |
+| 迭代信息 | 混入 reason | systemMessage 分离 |
+| `.sololoop/` 目录 | 自动创建 | 已移除 |
+| Prompt 纯净度 | 包含迭代前缀 | 原始 prompt 保持纯净 |
 
 ## 安装方式
 
@@ -47,7 +48,11 @@ Stop Hook 拦截，检查进度、验收标准和复选框
 
 安装后直接使用：
 ```bash
+# 纯循环模式
 /sololoop:sololoop "你的任务描述" --max 10
+
+# OpenSpec 集成模式
+/sololoop:openspec feature-name --max 10
 ```
 
 ### 🚀 方式 B：克隆后本地安装
@@ -88,7 +93,7 @@ claude --debug --plugin-dir /path/to/sololoop
 
 ## 快速开始
 
-### 基本用法
+### 纯循环模式（基本用法）
 
 ```bash
 # 基本用法（默认最多 10 次迭代）
@@ -107,113 +112,67 @@ claude --debug --plugin-dir /path/to/sololoop
 /sololoop:cancel-sololoop
 ```
 
-### 🆕 v2 规划模式（推荐）
+### 🆕 v5 OpenSpec 集成模式（推荐）
 
-使用 `--plan` 参数启用文件驱动的规划模式：
+使用 `/sololoop:openspec` 命令与 OpenSpec 无缝集成：
 
 ```bash
-# 启用规划模式
-/sololoop:sololoop "实现用户认证功能" --plan
+# 基本用法
+/sololoop:openspec feature-name
 
-# 规划模式 + 自定义迭代次数
-/sololoop:sololoop "优化前端性能" --plan --max 20
+# 指定最大迭代次数
+/sololoop:openspec feature-name --max 20
 
-# 规划模式 + 完成标记
-/sololoop:sololoop "完成 API 集成" --plan --promise "INTEGRATED" --max 15
+# 使用完成标记
+/sololoop:openspec feature-name --promise "DONE" --max 15
 ```
 
-启用 `--plan` 后，SoloLoop 会自动创建 `.sololoop/` 目录和规划文件：
+**前置条件**：
+1. 项目中已安装 OpenSpec（存在 `openspec/` 目录）
+2. 已创建变更目录 `openspec/changes/<feature-name>/`
+3. 变更目录中存在 `tasks.md` 文件
 
-| 文件 | 用途 |
-|------|------|
-| `.sololoop/task_plan.md` | 🆕 v4 增强 Spec 模板，包含 Requirements、AC、Test Cases、Phases |
-| `.sololoop/notes.md` | 迭代笔记，追加式记录见解和错误 |
-| `.sololoop/deliverable.md` | 交付物，隔离最终输出 |
-
-**规划模式工作流**：
-1. Claude 读取 `.sololoop/task_plan.md` 了解当前阶段和验收标准
-2. 执行任务并更新复选框进度
-3. 在 `.sololoop/notes.md` 记录关键见解
-4. Stop Hook 检查复选框完成度
+**OpenSpec 模式工作流**：
+1. 桥接脚本检查 OpenSpec 目录和 tasks.md 文件
+2. 自动构建引用 tasks.md 的 prompt
+3. Claude 按照 tasks.md 执行任务并勾选复选框
+4. Stop Hook 检测 tasks.md 复选框进度
 5. 所有复选框勾选后自动退出
 
-**示例 .sololoop/task_plan.md (v4 增强模板)**：
-```markdown
-# Task Specification
+**自动构建的 Prompt**：
+```
+按照 openspec/changes/<feature-name>/tasks.md 实现所有任务。
 
-Started: 2026-01-06T10:30:00Z
+参考规格：openspec/changes/<feature-name>/specs/
+项目约定：openspec/project.md（如存在）
 
-## Task
-
-用户的任务描述
-
-## Requirements
-
-- REQ-1: 初始需求描述
-
-## Acceptance Criteria
-
-- [ ] AC-1: 可验证的验收条件
-
-## Test Cases
-
-| ID | Input | Expected Output | Status |
-|----|-------|-----------------|--------|
-| TC-1 | ... | ... | ⬜ |
-
-## Phases
-
-- [ ] Phase 1: 分析需求
-- [ ] Phase 2: 设计架构
-- [ ] Phase 3: 实现核心功能
-- [ ] Phase 4: 编写测试
-- [ ] Phase 5: 文档和清理
-
-## Change Log
-
-| Timestamp | Change |
-|-----------|--------|
-| 2026-01-06T10:30:00Z | Initial spec created |
+完成每个任务后在 tasks.md 中勾选对应复选框。
 ```
 
-### 🆕 v4 严格规格模式
+### ⚠️ 废弃参数警告
 
-使用 `--spec` 参数启用严格规格模式，让 Claude 严格遵循 spec 约束：
+v5 已废弃以下参数，使用时会显示警告：
+
+| 废弃参数 | 替代方案 |
+|---------|---------|
+| `--plan` | 使用 `/sololoop:openspec` |
+| `--spec` | 使用 `/sololoop:openspec` |
 
 ```bash
-# 启用严格规格模式（自动启用 --plan）
-/sololoop:sololoop "实现用户认证功能" --spec
+# ❌ 废弃用法（会显示警告）
+/sololoop:sololoop "任务" --plan
+/sololoop:sololoop "任务" --spec
 
-# 严格模式 + 自定义迭代次数
-/sololoop:sololoop "开发支付模块" --spec --max 20
+# ✅ 推荐用法
+/sololoop:openspec feature-name
 ```
 
-**严格模式特性**：
-- 强制遵循 Requirements 和 Acceptance Criteria
-- 自动验证 Test Cases 中定义的测试用例
-- 在 block reason 中列出未完成的验收标准
-- 适用于需要高确定性和可验证性的任务
+### 中断恢复机制
 
-### 🆕 v4 Spec 更新命令
-
-在迭代过程中使用 `/sololoop:update-spec` 命令更新 spec 内容：
-
-```bash
-# 追加新需求
-/sololoop:update-spec "新增需求：支持用户头像上传"
-```
-
-该命令会：
-- 将新需求追加到 task_plan.md 的 Requirements 部分
-- 在 Change Log 中添加更新时间戳和变更记录
-- 输出确认信息显示更新内容
-
-### 🆕 v3 中断恢复机制
-
-当 Bash 命令执行被中断时，SoloLoop v3 会自动处理：
+当 Bash 命令执行被中断时，SoloLoop 会自动处理：
 
 - **自动检测**：从 transcript 检测 "Interrupted" 模式
-- **恢复指令**：在 prompt 前添加 "[中断恢复]" 前缀和恢复指导
+- **恢复指令**：在 systemMessage 中添加恢复指导
 - **升级处理**：连续中断 3 次以上时，建议替代方案
 - **状态跟踪**：记录中断次数，成功迭代后自动重置
 
@@ -221,54 +180,96 @@ Started: 2026-01-06T10:30:00Z
 
 ## 命令参数
 
+### /sololoop:sololoop（纯循环模式）
+
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | PROMPT | 任务描述（必需） | - |
 | --max N | 最大迭代次数 | 10 |
 | --promise TEXT | 完成标记 | 无 |
-| --plan | 启用规划文件模式 | 禁用 |
-| --spec | 🆕 v4 启用严格规格模式（自动启用 --plan） | 禁用 |
+| --plan | ⚠️ 已废弃，显示警告 | - |
+| --spec | ⚠️ 已废弃，显示警告 | - |
+
+### /sololoop:openspec（OpenSpec 集成模式）
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| change-name | OpenSpec 变更名称（必需） | - |
+| --max N | 最大迭代次数 | 10 |
+| --promise TEXT | 完成标记 | 无 |
 
 ### 退出条件优先级
 
-v4 优化了退出条件的检查顺序，确保任务完成优先于最大迭代限制：
+v5 优化了退出条件的检查顺序：
 
-1. **计划完成**：task_plan.md 中所有复选框都勾选
-2. **承诺匹配**：检测到 `<promise>TEXT</promise>` 精确匹配
-3. **最大迭代**：达到 --max 指定的次数（安全网）
+1. **OpenSpec 任务完成**：tasks.md 中所有复选框都勾选（优先级 1）
+2. **承诺匹配**：检测到 `<promise>TEXT</promise>` 精确匹配（优先级 2）
+3. **最大迭代**：达到 --max 指定的次数（优先级 3，安全网）
 
 ## 工作原理
 
-1. **setup-sololoop.sh**：解析参数，创建状态文件 `.claude/sololoop.local.md`，如果 `--plan` 则创建 `.sololoop/` 目录和规划文件
-2. **stop-hook.sh**：在 Claude 尝试停止时被调用，检查状态文件和规划文件，决定是否继续循环；v3 增加中断检测和恢复
-3. **状态文件**：使用 YAML frontmatter 存储迭代计数、最大次数、完成标记、规划模式标志、中断计数（v3）
+### 架构概览
+
+```
+SoloLoop v5 (轻量循环引擎)     OpenSpec (外部工具)
+├── 循环引擎                   ├── 规格定义 (specs/)
+├── 中断恢复                   ├── 变更管理 (changes/)
+├── OpenSpec 桥接              ├── 任务分解 (tasks.md)
+└── 退出条件判断               └── 归档演进
+```
+
+### 核心脚本
+
+1. **setup-sololoop.sh**：解析参数，创建状态文件 `.claude/sololoop.local.md`
+2. **openspec-bridge.sh**：检查 OpenSpec 目录，构建引用 tasks.md 的 prompt
+3. **stop-hook.sh**：在 Claude 尝试停止时被调用，检查状态文件和进度，决定是否继续循环
 
 ### Stop Hook 决策逻辑
 
 ```
 状态文件不存在？ → 允许退出
-达到最大迭代？ → 允许退出，删除状态文件
+OpenSpec 模式且复选框全勾选？ → 允许退出，删除状态文件
 检测到完成标记？ → 允许退出，删除状态文件
-规划模式且复选框全勾选？ → 允许退出，删除状态文件
-🆕 检测到 Bash 中断？ → 阻止退出，添加恢复指令继续迭代
-否则 → 阻止退出，返回 prompt + .sololoop/task_plan.md 引用继续迭代
+达到最大迭代？ → 允许退出，删除状态文件
+检测到 Bash 中断？ → 阻止退出，systemMessage 添加恢复指令
+否则 → 阻止退出，返回原始 prompt 继续迭代
 ```
 
-### 状态文件格式 (v4)
+### 状态文件格式 (v5)
 
 ```markdown
 ---
 iteration: 1
 max_iterations: 10
 completion_promise: "DONE"
-plan_mode: true
-spec_strict: true
-started_at: "2026-01-06T10:30:00Z"
+openspec_mode: true
+openspec_tasks_file: "openspec/changes/feature-x/tasks.md"
+started_at: "2026-01-07T10:30:00Z"
 interruption_count: 0
 last_interruption_type: null
 ---
 
-实现一个计算器功能，包括加减乘除运算。
+原始 prompt 内容...
+```
+
+### Hook 输出格式 (v5)
+
+v5 采用 `systemMessage` 分离迭代信息，保持 prompt 纯净：
+
+**继续迭代**：
+```json
+{
+  "decision": "block",
+  "reason": "原始 prompt 内容（纯净）",
+  "systemMessage": "🔄 SoloLoop 迭代 2/10 | 进度: 3/5 (60%)"
+}
+```
+
+**允许退出**：
+```json
+{
+  "decision": "allow"
+}
 ```
 
 ## 文件结构
@@ -276,35 +277,33 @@ last_interruption_type: null
 ```
 sololoop/
 ├── .claude-plugin/
-│   ├── plugin.json          # 插件元数据（v4.0.0）
+│   ├── plugin.json          # 插件元数据（v5.0.0）
 │   └── marketplace.json     # Marketplace 配置
 ├── commands/
-│   ├── sololoop.md          # 启动命令（支持 --plan / --spec）
-│   ├── cancel-sololoop.md   # 取消命令
-│   └── update-spec.md       # 🆕 v4 Spec 更新命令
+│   ├── sololoop.md          # 纯循环命令
+│   ├── openspec.md          # 🆕 v5 OpenSpec 桥接命令
+│   └── cancel-sololoop.md   # 取消命令
 ├── hooks/
 │   ├── hooks.json           # Hook 配置
-│   └── stop-hook.sh         # Stop Hook 脚本（v4 增强：退出优先级、AC 解析）
+│   └── stop-hook.sh         # Stop Hook 脚本（v5：systemMessage 分离）
 ├── scripts/
-│   ├── setup-sololoop.sh    # 初始化脚本（v4 增强：增强 Spec 模板）
-│   ├── cancel-sololoop.sh   # 取消脚本
-│   └── update-spec.sh       # 🆕 v4 Spec 更新脚本
+│   ├── setup-sololoop.sh    # 初始化脚本
+│   ├── openspec-bridge.sh   # 🆕 v5 OpenSpec 桥接脚本
+│   └── cancel-sololoop.sh   # 取消脚本
 ├── tests/                   # 测试文件
 │   ├── setup-sololoop.bats
+│   ├── openspec-bridge.bats # 🆕 v5 新增
 │   ├── stop-hook.bats
-│   ├── update-spec.bats     # 🆕 v4 新增
 │   ├── cancel-sololoop.bats
+│   ├── command-format.bats
+│   ├── integration.bats
 │   └── helpers/
 └── README.md
 
-# v4 规划模式生成的文件
+# 运行时生成的文件
 project/
-├── .claude/
-│   └── sololoop.local.md    # 状态文件（v4 增加 spec_strict 字段）
-└── .sololoop/               # 规划文件目录
-    ├── task_plan.md         # 🆕 v4 增强 Spec 模板
-    ├── notes.md             # 迭代笔记
-    └── deliverable.md       # 交付物
+└── .claude/
+    └── sololoop.local.md    # 状态文件
 ```
 
 ## 故障排除
@@ -315,13 +314,11 @@ project/
 | 权限错误 | 使用 `--dangerously-skip-permissions` 或手动添加权限 |
 | 循环没有启动 | 检查 prompt 是否为空，--max 是否为正整数 |
 | 循环没有停止 | 运行 `/sololoop:cancel-sololoop` 或删除 `.claude/sololoop.local.md` |
-| 规划文件未创建 | 确认使用了 `--plan` 参数，检查 `.sololoop/` 目录 |
-| 复选框进度不更新 | 确保 Claude 正确编辑 `.sololoop/task_plan.md` 中的复选框 |
 | 中断后循环停止 | 升级到 v3+，自动处理 Bash 中断 |
 | 迭代次数不准确 | 升级到 v3+，严格按照 `--max` 执行 |
-| 🆕 --spec 无效 | 确认同时使用了 `--plan` 参数 |
-| 🆕 验收标准未检查 | 确认 task_plan.md 包含 Acceptance Criteria 部分 |
-| 🆕 update-spec 失败 | 确认 `.sololoop/task_plan.md` 文件存在 |
+| 🆕 openspec 命令失败 | 确认 `openspec/` 目录存在且包含 tasks.md |
+| 🆕 --plan/--spec 警告 | 这些参数已废弃，请使用 `/sololoop:openspec` |
+| 🆕 进度不显示 | 确认 tasks.md 中使用标准复选框格式 `- [ ]` / `- [x]` |
 
 ---
 
@@ -458,10 +455,13 @@ hooks.json 结构：
 
 ### Stop Hook 输出格式
 
+v5 采用 `systemMessage` 分离迭代信息：
+
 ```json
 {
   "decision": "block",
-  "reason": "继续迭代的 prompt 内容"
+  "reason": "原始 prompt（纯净）",
+  "systemMessage": "🔄 SoloLoop 迭代 2/10 | 进度: 3/5 (60%)"
 }
 ```
 
@@ -542,10 +542,22 @@ claude --plugin-dir /path/to/plugin
 
 | 版本 | 主要特性 |
 |------|----------|
+| v5.0.0 | 架构重构：职责分离、移除 `--plan`/`--spec`、新增 `/sololoop:openspec` 桥接、systemMessage 分离迭代信息 |
 | v4.0.0 | 规格驱动规划：增强 Spec 模板、`--spec` 严格模式、退出条件优先级优化、`/sololoop:update-spec` 命令 |
 | v3.0.0 | 中断恢复机制、`.sololoop/` 目录结构、严格退出条件、中断计数跟踪 |
 | v2.0.0 | 规划文件模式 (`--plan`)、复选框进度跟踪、task_plan.md/notes.md/deliverable.md |
 | v1.0.0 | 基础迭代循环、Stop Hook 机制、`--max` 和 `--promise` 参数 |
+
+### v5 迁移指南
+
+从 v4 迁移到 v5：
+
+1. **移除 `.sololoop/` 目录**：v5 不再使用此目录
+2. **安装 OpenSpec**：如需规格驱动开发，请安装 OpenSpec
+3. **更新命令**：
+   - `--plan` → `/sololoop:openspec <change-name>`
+   - `--spec` → `/sololoop:openspec <change-name>`
+4. **纯循环模式**：继续使用 `/sololoop:sololoop "prompt" --max N`
 
 ---
 
