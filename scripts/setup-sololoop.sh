@@ -45,17 +45,17 @@ SoloLoop v4 - 规格驱动迭代循环插件
   --max <n>       最大迭代次数（默认：10）
   --promise <t>   完成标记（多词需加引号）
   --plan          启用规划文件模式（创建 .sololoop/ 目录下的规划文件）
-  --spec          启用严格规格模式（需要 --plan，强制遵循 Requirements 和 Acceptance Criteria）
+  --spec          启用严格规格模式（自动启用 --plan，强制遵循 Requirements 和 Acceptance Criteria）
   -h, --help      显示帮助
 
 示例：
   /sololoop:sololoop "实现登录功能" --max 5
   /sololoop:sololoop "重构代码" --promise "DONE" --max 20
   /sololoop:sololoop "开发新功能" --plan --max 15
-  /sololoop:sololoop "开发新功能" --plan --spec --max 15
+  /sololoop:sololoop "开发新功能" --spec --max 15
 
 退出条件（按优先级）：
-  1. 所有 .sololoop/task_plan.md 复选框完成（--plan 模式）
+  1. 所有 .sololoop/task_plan.md 复选框完成（--plan 或 --spec 模式）
   2. 输出 <promise>完成标记</promise>
   3. 达到最大迭代次数
   4. 运行 /sololoop:cancel-sololoop
@@ -110,11 +110,11 @@ if [[ -z "$PROMPT" ]]; then
 fi
 
 # ----------------------------------------------------------------------------
-# 验证 --spec 需要 --plan 模式
+# --spec 自动启用 --plan 模式
+# 严格模式需要规划文件支持，自动隐含 --plan
 # ----------------------------------------------------------------------------
 if [[ "$SPEC_STRICT" == "true" ]] && [[ "$PLAN_MODE" == "false" ]]; then
-  echo "⚠️ 警告：--spec 需要 --plan 模式，已自动忽略 --spec 参数" >&2
-  SPEC_STRICT=false
+  PLAN_MODE=true
 fi
 
 # ----------------------------------------------------------------------------

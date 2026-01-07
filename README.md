@@ -12,7 +12,7 @@ SoloLoop 通过 Stop Hook 机制拦截 Claude 的退出尝试，将相同的 pro
 **v4 新特性**：借鉴 OpenSpec 的 spec-driven development (SDD) 设计，将 `--plan` 模式从"动态文件笔记"演进为"规格驱动规划"，通过结构化的 spec 模板和可选的严格模式，在动态迭代与确定性实现间达到最佳平衡。
 
 ```
-用户运行 /sololoop:sololoop "任务描述" --plan --spec --max 10
+用户运行 /sololoop:sololoop "任务描述" --spec --max 10
     ↓
 Claude 处理任务（严格遵循 spec 约束）
     ↓
@@ -181,11 +181,11 @@ Started: 2026-01-06T10:30:00Z
 使用 `--spec` 参数启用严格规格模式，让 Claude 严格遵循 spec 约束：
 
 ```bash
-# 启用严格规格模式（需配合 --plan）
-/sololoop:sololoop "实现用户认证功能" --plan --spec
+# 启用严格规格模式（自动启用 --plan）
+/sololoop:sololoop "实现用户认证功能" --spec
 
 # 严格模式 + 自定义迭代次数
-/sololoop:sololoop "开发支付模块" --plan --spec --max 20
+/sololoop:sololoop "开发支付模块" --spec --max 20
 ```
 
 **严格模式特性**：
@@ -227,7 +227,7 @@ Started: 2026-01-06T10:30:00Z
 | --max N | 最大迭代次数 | 10 |
 | --promise TEXT | 完成标记 | 无 |
 | --plan | 启用规划文件模式 | 禁用 |
-| --spec | 🆕 v4 启用严格规格模式（需配合 --plan） | 禁用 |
+| --spec | 🆕 v4 启用严格规格模式（自动启用 --plan） | 禁用 |
 
 ### 退出条件优先级
 
@@ -279,7 +279,7 @@ sololoop/
 │   ├── plugin.json          # 插件元数据（v4.0.0）
 │   └── marketplace.json     # Marketplace 配置
 ├── commands/
-│   ├── sololoop.md          # 启动命令（支持 --plan --spec）
+│   ├── sololoop.md          # 启动命令（支持 --plan / --spec）
 │   ├── cancel-sololoop.md   # 取消命令
 │   └── update-spec.md       # 🆕 v4 Spec 更新命令
 ├── hooks/
