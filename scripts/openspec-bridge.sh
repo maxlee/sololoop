@@ -5,14 +5,16 @@
 #
 # 功能说明：
 #   检查 OpenSpec 前置条件，构建引用 tasks.md 的 prompt，创建状态文件。
+#   v6: 支持 + 触发符列出可用变更，Promise 驱动退出机制
 #
 # 使用方法：
-#   /sololoop:openspec <change-name> [--max N] [--promise TEXT]
+#   /sololoop:openspec <change-name>|+ [--max N] [--promise TEXT]
 #
 # 参数说明：
 #   <change-name>  OpenSpec 变更名称（必需）
+#   +              列出所有可用变更
 #   --max <n>      最大迭代次数（默认：10）
-#   --promise <t>  完成标记文本
+#   --promise <t>  完成标记文本（默认：DONE）
 #   --help         显示帮助信息
 #
 # ============================================================================
@@ -32,23 +34,25 @@ OPENSPEC_DIR="openspec"
 # ----------------------------------------------------------------------------
 show_help() {
   cat << 'EOF'
-SoloLoop v5 OpenSpec 桥接命令
+SoloLoop v6 OpenSpec 桥接命令
 
 用法：
-  /sololoop:openspec <change-name> [选项]
+  /sololoop:openspec <change-name>|+ [选项]
 
 参数：
   <change-name>   OpenSpec 变更名称（必需）
+  +               列出所有可用变更
 
 选项：
   --max <n>       最大迭代次数（默认：10）
-  --promise <t>   完成标记（多词需加引号）
+  --promise <t>   完成标记（默认：DONE，多词需加引号）
   -h, --help      显示帮助
 
 示例：
+  /sololoop:openspec +
   /sololoop:openspec feature-login
   /sololoop:openspec feature-login --max 20
-  /sololoop:openspec feature-login --promise "DONE" --max 15
+  /sololoop:openspec feature-login --promise "FEATURE_DONE" --max 15
 
 前置条件：
   1. 项目中需要安装 OpenSpec（存在 openspec/ 目录）
@@ -56,34 +60,52 @@ SoloLoop v5 OpenSpec 桥接命令
   3. 变更目录中需要存在 tasks.md 文件
 
 退出条件（按优先级）：
-  1. tasks.md 中所有复选框完成
-  2. 输出 <promise>完成标记</promise>
-  3. 达到最大迭代次数
-  4. 运行 /sololoop:cancel-sololoop
+  1. 输出 <promise>完成标记</promise>（默认：DONE）
+  2. 达到最大迭代次数
+  3. 运行 /sololoop:cancel-sololoop
+
+注意：复选框完成不会自动退出，需要输出 promise 标记
 EOF
 }
 
 # ----------------------------------------------------------------------------
-# 列出可用的变更目录
+# 列出可用的变更目录 (v6 增强版)
 # ----------------------------------------------------------------------------
 list_available_changes() {
+  echo "📂 可用的 OpenSpec 变更："
+  echo ""
+  
   local changes_dir="$OPENSPEC_DIR/changes"
-  if [[ -d "$changes_dir" ]]; then
-    local changes
-    changes=$(find "$changes_dir" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | sort)
-    if [[ -n "$changes" ]]; then
-      echo "可用的变更目录："
-      echo "$changes" | while read -r change; do
-        if [[ -f "$changes_dir/$change/tasks.md" ]]; then
-          echo "  ✅ $change"
-        else
-          echo "  ⚠️ $change (缺少 tasks.md)"
-        fi
-      done
-    else
-      echo "暂无可用的变更目录。"
-    fi
+  
+  if [[ ! -d "$changes_dir" ]]; then
+    echo "  (无可用变更)"
+    echo ""
+    echo "请使用完整命令："
+    echo "  /sololoop:openspec <feature-name>"
+    return
   fi
+  
+  local has_changes=false
+  for dir in "$changes_dir"/*/; do
+    if [[ -d "$dir" ]]; then
+      has_changes=true
+      local name
+      name=$(basename "$dir")
+      if [[ -f "${dir}tasks.md" ]]; then
+        echo "  ✅ $name"
+      else
+        echo "  ⚠️ $name (缺少 tasks.md)"
+      fi
+    fi
+  done
+  
+  if [[ "$has_changes" == "false" ]]; then
+    echo "  (无可用变更)"
+  fi
+  
+  echo ""
+  echo "请使用完整命令："
+  echo "  /sololoop:openspec <feature-name>"
 }
 
 # ----------------------------------------------------------------------------
@@ -134,9 +156,34 @@ done
 if [[ -z "$CHANGE_NAME" ]]; then
   echo "❌ 错误：请提供 OpenSpec 变更名称" >&2
   echo "示例：/sololoop:openspec feature-login --max 10" >&2
+  echo "      /sololoop:openspec + (列出可用变更)" >&2
   echo "" >&2
   show_help
   exit 1
+fi
+
+# ----------------------------------------------------------------------------
+# v6: 处理 + 触发符 - 列出可用变更
+# ----------------------------------------------------------------------------
+if [[ "$CHANGE_NAME" == "+" ]]; then
+  # 检查 openspec/ 目录是否存在
+  if [[ ! -d "$OPENSPEC_DIR" ]]; then
+    echo "❌ 错误：未找到 OpenSpec 目录 ($OPENSPEC_DIR/)" >&2
+    echo "" >&2
+    echo "请先安装 OpenSpec：" >&2
+    echo "  1. 访问 https://github.com/openspec/openspec 获取安装说明" >&2
+    echo "  2. 或运行 openspec init 初始化项目" >&2
+    exit 1
+  fi
+  list_available_changes
+  exit 0
+fi
+
+# ----------------------------------------------------------------------------
+# v6: 设置默认 Promise 值
+# ----------------------------------------------------------------------------
+if [[ -z "$COMPLETION_PROMISE" ]]; then
+  COMPLETION_PROMISE="DONE"
 fi
 
 # ----------------------------------------------------------------------------
@@ -178,25 +225,30 @@ if [[ ! -f "$TASKS_FILE" ]]; then
 fi
 
 # ----------------------------------------------------------------------------
-# 构建 prompt
+# 构建 prompt (v6: 包含 Promise 退出说明)
 # ----------------------------------------------------------------------------
 PROMPT="按照 $TASKS_FILE 实现所有任务。
 
 参考规格：$CHANGE_DIR/specs/（如存在）
 项目约定：$OPENSPEC_DIR/project.md（如存在）
 
-完成每个任务后在 tasks.md 中勾选对应复选框。"
+## 任务执行规则
+
+1. 完成每个任务后在 tasks.md 中勾选对应复选框
+2. 复选框完成不会自动退出循环
+3. 完成所有任务后，进行自我审查：
+   - 检查是否有遗漏的任务
+   - 检查是否有需要改进的地方
+   - 确认代码质量符合预期
+4. 确认一切完成后，输出 <promise>$COMPLETION_PROMISE</promise> 退出循环"
 
 # ----------------------------------------------------------------------------
 # 创建状态文件
 # ----------------------------------------------------------------------------
 mkdir -p .claude
 
-if [[ -n "$COMPLETION_PROMISE" ]]; then
-  PROMISE_YAML="\"$COMPLETION_PROMISE\""
-else
-  PROMISE_YAML="null"
-fi
+# v6: COMPLETION_PROMISE 总是有值（默认 DONE）
+PROMISE_YAML="\"$COMPLETION_PROMISE\""
 
 cat > .claude/sololoop.local.md << EOF
 ---
@@ -225,27 +277,22 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 输出启动信息
+# 输出启动信息 (v6)
 # ----------------------------------------------------------------------------
-echo "🔄 SoloLoop v5 OpenSpec 模式已启动！"
+echo "🔄 SoloLoop v6 OpenSpec 模式已启动！"
 echo ""
 echo "变更名称：$CHANGE_NAME"
 echo "任务文件：$TASKS_FILE"
 echo "迭代：1 / $MAX_ITERATIONS"
 echo "进度：$CHECKED_CHECKBOXES / $TOTAL_CHECKBOXES ($PROGRESS_PCT%)"
-if [[ -n "$COMPLETION_PROMISE" ]]; then
-  echo "完成标记：$COMPLETION_PROMISE"
-fi
+echo "完成标记：$COMPLETION_PROMISE"
 echo ""
 echo "📋 完成条件（按优先级）："
-echo "  1. 完成 $TASKS_FILE 中所有复选框"
-if [[ -n "$COMPLETION_PROMISE" ]]; then
-  echo "  2. 输出 <promise>$COMPLETION_PROMISE</promise>"
-  echo "  3. 达到最大迭代次数 ($MAX_ITERATIONS)"
-else
-  echo "  2. 达到最大迭代次数 ($MAX_ITERATIONS)"
-fi
+echo "  1. 输出 <promise>$COMPLETION_PROMISE</promise>"
+echo "  2. 达到最大迭代次数 ($MAX_ITERATIONS)"
 echo "  - 运行 /sololoop:cancel-sololoop 取消"
+echo ""
+echo "⚠️ 注意：复选框完成不会自动退出，需要输出 promise 标记"
 echo ""
 echo "--- 任务开始 ---"
 echo ""

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# SoloLoop Stop Hook - 迭代循环的核心脚本 (v5)
+# SoloLoop Stop Hook - 迭代循环的核心脚本 (v6)
 # ============================================================================
 #
 # 功能说明：
@@ -8,19 +8,19 @@
 #   如果存在活动的 SoloLoop 循环，脚本会阻止停止并将相同的 prompt 反馈回去，
 #   让 Claude 继续在同一任务上迭代。
 #
-# v5 变更：
-#   - 移除 .sololoop/ 目录相关逻辑
-#   - 移除 plan_mode 和 spec_strict 字段
-#   - 移除 Acceptance Criteria 解析
-#   - 新增 OpenSpec 模式检测和进度跟踪
-#   - 采用 systemMessage 分离迭代信息与原始 prompt
+# v6 变更：
+#   - 移除复选框自动退出逻辑（复选框仅作进度指示器）
+#   - Promise 驱动退出：必须输出 <promise>TEXT</promise> 才退出
+#   - 更新退出条件优先级：
+#      - 优先级 1: Promise 匹配 → 退出
+#      - 优先级 2: 最大迭代次数 → 退出
+#   - 100% 复选框完成时显示"等待完成标记"
 #
 # 工作原理：
 #   1. 检查状态文件是否存在（.claude/sololoop.local.md）
 #   2. 检查退出条件（按优先级）：
-#      - 优先级 1: OpenSpec 复选框全完成
-#      - 优先级 2: Promise 匹配
-#      - 优先级 3: 最大迭代次数
+#      - 优先级 1: Promise 匹配
+#      - 优先级 2: 最大迭代次数
 #   3. 如果需要继续，输出 JSON 格式的 block 决策
 #      - reason: 原始 prompt（纯净）
 #      - systemMessage: 迭代信息和进度
@@ -206,8 +206,9 @@ fi
 
 
 # ----------------------------------------------------------------------------
-# OpenSpec 模式检测和进度跟踪 (v5 新增)
+# OpenSpec 模式检测和进度跟踪 (v5 新增, v6 修改)
 # Requirements 5.1, 5.2, 5.3, 5.4, 5.5
+# v6: 复选框仅作进度指示器，不触发退出
 # ----------------------------------------------------------------------------
 OPENSPEC_CHECKBOX_TOTAL=0
 OPENSPEC_CHECKBOX_CHECKED=0
@@ -258,36 +259,33 @@ if [[ -n "$DETECTED_TASKS_FILE" ]] && [[ -f "$DETECTED_TASKS_FILE" ]]; then
 fi
 
 # ----------------------------------------------------------------------------
-# 多重 OR 退出条件优先级判断 (v5)
-# Requirements 6.1, 6.2, 6.3, 6.4, 6.5
+# 多重 OR 退出条件优先级判断 (v6)
+# Requirements 2.1, 2.2, 2.4, 5.1, 5.2
+# v6 变更：移除复选框自动退出，改为 Promise 驱动
 # 按优先级检查退出条件：
-#   1. OpenSpec 复选框全完成 - 最高优先级
-#   2. Promise 精确匹配 <promise>TEXT</promise>
-#   3. 达到最大迭代次数 - 安全网
+#   1. Promise 精确匹配 <promise>TEXT</promise> - 最高优先级
+#   2. 达到最大迭代次数 - 安全网
+# 注意：复选框完成不再触发退出，仅作进度指示器
 # ----------------------------------------------------------------------------
 
 EXIT_ALLOWED=false
 EXIT_REASON=""
 
-# 优先级 1: OpenSpec 复选框全完成 - Requirements 6.1
-if [[ "$ALL_OPENSPEC_CHECKBOXES_CHECKED" == "true" ]]; then
+# 优先级 1: Promise 精确匹配 - Requirements 2.2, 5.1
+if [[ "$PROMISE_MATCHED" == "true" ]]; then
   EXIT_ALLOWED=true
-  EXIT_REASON="任务完成 ($OPENSPEC_CHECKBOX_CHECKED/$OPENSPEC_CHECKBOX_TOTAL)"
-# 优先级 2: Promise 精确匹配 - Requirements 6.2
-elif [[ "$PROMISE_MATCHED" == "true" ]]; then
-  EXIT_ALLOWED=true
-  EXIT_REASON="完成标记 <promise>$COMPLETION_PROMISE</promise>"
-# 优先级 3: 达到最大迭代次数（安全网）- Requirements 6.3
+  EXIT_REASON="完成标记匹配"
+# 优先级 2: 达到最大迭代次数（安全网）- Requirements 2.4, 5.1
 elif [[ $ITERATION -ge $MAX_ITERATIONS ]]; then
   EXIT_ALLOWED=true
-  EXIT_REASON="最大迭代 $MAX_ITERATIONS"
+  EXIT_REASON="最大迭代次数 ($ITERATION/$MAX_ITERATIONS)"
 fi
+# 注意：v6 移除了复选框 100% 退出逻辑 - Requirements 2.1, 5.2
+# 复选框进度仅在 systemMessage 中显示
 
-# 如果满足退出条件，允许退出并清理状态文件 - Requirements 6.4, 6.5
+# 如果满足退出条件，允许退出并清理状态文件 - Requirements 5.3, 5.4
 if [[ "$EXIT_ALLOWED" == "true" ]]; then
-  if [[ "$EXIT_REASON" == *"任务完成"* ]]; then
-    echo "✅ SoloLoop: $EXIT_REASON"
-  elif [[ "$EXIT_REASON" == *"完成标记"* ]]; then
+  if [[ "$EXIT_REASON" == "完成标记匹配" ]]; then
     echo "✅ SoloLoop: $EXIT_REASON"
   else
     echo "🛑 SoloLoop: $EXIT_REASON"
@@ -322,15 +320,20 @@ sed -e "s/^iteration: .*/iteration: $NEXT_ITERATION/" \
 mv "${STATE_FILE}.tmp" "$STATE_FILE"
 
 # ----------------------------------------------------------------------------
-# 构建 systemMessage (v5 新增)
-# Requirements 4.1, 4.2, 4.3, 4.4
+# 构建 systemMessage (v5 新增, v6 更新)
+# Requirements 2.6, 4.1, 4.2, 4.3, 4.4
 # systemMessage 包含迭代信息，reason 只包含原始 prompt
+# v6: 100% 完成时显示"等待完成标记"
 # ----------------------------------------------------------------------------
 SYSTEM_MESSAGE="🔄 SoloLoop 迭代 $NEXT_ITERATION/$MAX_ITERATIONS"
 
 # 添加 OpenSpec 进度信息
 if [[ -n "$OPENSPEC_PROGRESS_INFO" ]]; then
   SYSTEM_MESSAGE="$SYSTEM_MESSAGE | $OPENSPEC_PROGRESS_INFO"
+  # v6: 100% 完成时显示等待完成标记提示 - Requirements 2.6
+  if [[ "$ALL_OPENSPEC_CHECKBOXES_CHECKED" == "true" ]]; then
+    SYSTEM_MESSAGE="$SYSTEM_MESSAGE | 等待完成标记"
+  fi
 fi
 
 # 添加 promise 提示

@@ -1,13 +1,13 @@
 {
   "name": "sololoop",
-  "version": "5.0.0",
-  "description": "纯粹的顽强循环引擎 - 让 Claude 在任务上持续迭代直到完成",
+  "version": "6.0.0",
+  "description": "顽强循环引擎 - Promise 驱动退出，支持 + 触发符列出 OpenSpec 变更",
   "author": {
     "name": "maxlee",
     "url": "https://github.com/maxlee/sololoop"
   },
   "repository": "https://github.com/maxlee/sololoop",
   "license": "MIT",
-  "keywords": ["iteration", "loop", "productivity", "openspec"],
+  "keywords": ["iteration", "loop", "productivity", "openspec", "promise"],
   "hooks": "./hooks/hooks.json"
 }
