@@ -9,7 +9,7 @@ Claude Code 迭代循环插件，让 Claude 在同一任务上持续迭代直到
 
 SoloLoop 通过 Stop Hook 机制拦截 Claude 的退出尝试，将相同的 prompt 反复输入，实现自引用的迭代改进。
 
-**v7 修复版本**：修复 hooks.json 格式符合官方规范，移除 OpenSpec 默认 Promise，移除 statusLine 功能。
+**v7 修复版本**：修复 hooks.json 格式符合官方规范，移除 OpenSpec 默认 Promise。
 
 ```
 用户运行 /sololoop:sololoop "任务描述" --max 10
@@ -29,7 +29,6 @@ Stop Hook 拦截，检查 Promise 标记
 |------|----|----|
 | hooks.json 格式 | 扁平数组（错误） | 嵌套对象（官方规范） |
 | OpenSpec 默认 Promise | `DONE` | 无默认值 |
-| statusLine 功能 | 存在 | 已移除 |
 | Stop Hook 触发 | 从未触发 | 正常工作 |
 
 ### v6 核心变更
@@ -593,7 +592,7 @@ claude --plugin-dir /path/to/plugin
 
 | 版本 | 主要特性 |
 |------|----------|
-| v7.0.0 | 修复 hooks.json 格式符合官方规范、移除 OpenSpec 默认 Promise、移除 statusLine 功能、Stop Hook 正常触发 |
+| v7.0.0 | 修复 hooks.json 格式符合官方规范、移除 OpenSpec 默认 Promise、Stop Hook 正常触发 |
 | v6.0.0 | Promise 驱动退出、`+` 触发符列出变更、默认 Promise 为 DONE、移除复选框自动退出 |
 | v5.0.0 | 架构重构：职责分离、移除 `--plan`/`--spec`、新增 `/sololoop:openspec` 桥接、systemMessage 分离迭代信息 |
 | v4.0.0 | 规格驱动规划：增强 Spec 模板、`--spec` 严格模式、退出条件优先级优化、`/sololoop:update-spec` 命令 |
@@ -607,7 +606,6 @@ claude --plugin-dir /path/to/plugin
 
 1. **hooks.json 格式变更**：v7 使用官方规范的嵌套对象格式，Stop Hook 现在能正确触发
 2. **OpenSpec 默认 Promise 移除**：不再自动设置 `COMPLETION_PROMISE="DONE"`，需要显式使用 `--promise` 参数
-3. **statusLine 功能移除**：不再需要配置 `~/.claude/settings.json`
 
 ### v6 迁移指南
 
