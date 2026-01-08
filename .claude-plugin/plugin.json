@@ -1,7 +1,7 @@
 {
   "name": "sololoop",
-  "version": "6.0.0",
-  "description": "顽强循环引擎 - Promise 驱动退出，支持 + 触发符列出 OpenSpec 变更",
+  "version": "7.0.0",
+  "description": "顽强循环引擎 - 修复 hooks.json 格式，移除默认 Promise，符合官方规范",
   "author": {
     "name": "maxlee",
     "url": "https://github.com/maxlee/sololoop"

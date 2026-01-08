@@ -3,13 +3,13 @@
 Claude Code 迭代循环插件，让 Claude 在同一任务上持续迭代直到完成。
 
 [![GitHub](https://img.shields.io/badge/GitHub-maxlee%2Fsololoop-blue)](https://github.com/maxlee/sololoop)
-[![Version](https://img.shields.io/badge/version-6.0.0-green)](https://github.com/maxlee/sololoop)
+[![Version](https://img.shields.io/badge/version-7.0.0-green)](https://github.com/maxlee/sololoop)
 
 ## 什么是 SoloLoop？
 
 SoloLoop 通过 Stop Hook 机制拦截 Claude 的退出尝试，将相同的 prompt 反复输入，实现自引用的迭代改进。
 
-**v6 新特性**：Promise 驱动退出机制、`+` 触发符列出可用变更、StatusLine 配置模板。移除复选框自动退出逻辑，让 Claude 自主判断何时完成。
+**v7 修复版本**：修复 hooks.json 格式符合官方规范，移除 OpenSpec 默认 Promise，移除 statusLine 功能。
 
 ```
 用户运行 /sololoop:sololoop "任务描述" --max 10
@@ -23,6 +23,15 @@ Stop Hook 拦截，检查 Promise 标记
 重复直到 Promise 匹配或达到最大迭代次数
 ```
 
+### v7 核心修复
+
+| 问题 | v6 | v7 |
+|------|----|----|
+| hooks.json 格式 | 扁平数组（错误） | 嵌套对象（官方规范） |
+| OpenSpec 默认 Promise | `DONE` | 无默认值 |
+| statusLine 功能 | 存在 | 已移除 |
+| Stop Hook 触发 | 从未触发 | 正常工作 |
+
 ### v6 核心变更
 
 | 特性 | v5 | v6 |
@@ -30,7 +39,6 @@ Stop Hook 拦截，检查 Promise 标记
 | 退出条件 | 复选框 100% 或 Promise | 仅 Promise 驱动 |
 | 变更列表 | 手动输入名称 | `+` 触发符快速列出 |
 | 默认 Promise | 无 | `DONE` |
-| StatusLine | 无 | 提供配置模板 |
 | 自我审查 | 无 | Prompt 包含审查指引 |
 
 ## 安装方式
@@ -233,9 +241,9 @@ v5 已废弃以下参数，使用时会显示警告：
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | change-name | OpenSpec 变更名称（必需） | - |
-| + | 🆕 v6: 列出所有可用变更 | - |
+| + | 列出所有可用变更 | - |
 | --max N | 最大迭代次数 | 10 |
-| --promise TEXT | 完成标记 | 🆕 v6: DONE |
+| --promise TEXT | 完成标记（可选，不设置则仅依赖最大迭代次数退出） | 无 |
 
 ### 退出条件优先级
 
@@ -313,43 +321,12 @@ v6 采用 `systemMessage` 分离迭代信息，保持 prompt 纯净：
 }
 ```
 
-## 🆕 v6 StatusLine 配置
-
-v6 提供 StatusLine 配置模板，让你在 Claude Code 底部状态栏实时查看 SoloLoop 状态。
-
-### 配置方法
-
-将以下配置添加到你的 Claude Code 设置中：
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "input=$(cat); cwd=$(echo \"$input\" | jq -r '.workspace.current_dir'); if [ -f \"$cwd/.claude/sololoop.local.md\" ]; then iter=$(sed -n 's/^iteration: *//p' \"$cwd/.claude/sololoop.local.md\" | head -1); max=$(sed -n 's/^max_iterations: *//p' \"$cwd/.claude/sololoop.local.md\" | head -1); tasks=$(sed -n 's/^openspec_tasks_file: *\"\\(.*\\)\"/\\1/p' \"$cwd/.claude/sololoop.local.md\" | head -1); if [ -n \"$tasks\" ] && [ -f \"$cwd/$tasks\" ]; then total=$(grep -cE '^\\s*-\\s*\\[[ xX]\\]' \"$cwd/$tasks\" 2>/dev/null || echo 0); done=$(grep -cE '^\\s*-\\s*\\[[xX]\\]' \"$cwd/$tasks\" 2>/dev/null || echo 0); printf '🔄 %s/%s 📋 %s/%s' \"$iter\" \"$max\" \"$done\" \"$total\"; else printf '🔄 %s/%s' \"$iter\" \"$max\"; fi; fi"
-  }
-}
-```
-
-### 显示效果
-
-| 模式 | 显示内容 |
-|------|----------|
-| 纯循环模式 | `🔄 2/10` (迭代 2/10) |
-| OpenSpec 模式 | `🔄 2/10 📋 5/8` (迭代 2/10, 任务 5/8) |
-| 未激活 | (无显示) |
-
-### 功能说明
-
-- 🔄 显示当前迭代次数 / 最大迭代次数
-- 📋 显示已完成任务数 / 总任务数（仅 OpenSpec 模式）
-- SoloLoop 未激活时不显示任何内容
-
 ## 文件结构
 
 ```
 sololoop/
 ├── .claude-plugin/
-│   ├── plugin.json          # 插件元数据（v6.0.0）
+│   ├── plugin.json          # 插件元数据（v7.0.0）
 │   └── marketplace.json     # Marketplace 配置
 ├── commands/
 │   ├── sololoop.md          # 纯循环命令
@@ -393,7 +370,6 @@ project/
 | 进度不显示 | 确认 tasks.md 中使用标准复选框格式 `- [ ]` / `- [x]` |
 | 🆕 复选框 100% 但不退出 | v6 正常行为，需要输出 `<promise>DONE</promise>` 才能退出 |
 | 🆕 `+` 触发符无输出 | 确认 `openspec/changes/` 目录存在 |
-| 🆕 StatusLine 不显示 | 确认已正确配置 statusLine，且 SoloLoop 已激活 |
 
 ---
 
@@ -617,12 +593,21 @@ claude --plugin-dir /path/to/plugin
 
 | 版本 | 主要特性 |
 |------|----------|
-| v6.0.0 | Promise 驱动退出、`+` 触发符列出变更、StatusLine 配置模板、默认 Promise 为 DONE、移除复选框自动退出 |
+| v7.0.0 | 修复 hooks.json 格式符合官方规范、移除 OpenSpec 默认 Promise、移除 statusLine 功能、Stop Hook 正常触发 |
+| v6.0.0 | Promise 驱动退出、`+` 触发符列出变更、默认 Promise 为 DONE、移除复选框自动退出 |
 | v5.0.0 | 架构重构：职责分离、移除 `--plan`/`--spec`、新增 `/sololoop:openspec` 桥接、systemMessage 分离迭代信息 |
 | v4.0.0 | 规格驱动规划：增强 Spec 模板、`--spec` 严格模式、退出条件优先级优化、`/sololoop:update-spec` 命令 |
 | v3.0.0 | 中断恢复机制、`.sololoop/` 目录结构、严格退出条件、中断计数跟踪 |
 | v2.0.0 | 规划文件模式 (`--plan`)、复选框进度跟踪、task_plan.md/notes.md/deliverable.md |
 | v1.0.0 | 基础迭代循环、Stop Hook 机制、`--max` 和 `--promise` 参数 |
+
+### v7 迁移指南
+
+从 v6 迁移到 v7：
+
+1. **hooks.json 格式变更**：v7 使用官方规范的嵌套对象格式，Stop Hook 现在能正确触发
+2. **OpenSpec 默认 Promise 移除**：不再自动设置 `COMPLETION_PROMISE="DONE"`，需要显式使用 `--promise` 参数
+3. **statusLine 功能移除**：不再需要配置 `~/.claude/settings.json`
 
 ### v6 迁移指南
 
@@ -631,7 +616,6 @@ claude --plugin-dir /path/to/plugin
 1. **退出行为变更**：复选框 100% 完成不再自动退出，需要 Claude 输出 `<promise>DONE</promise>`
 2. **默认 Promise**：v6 默认使用 `DONE` 作为完成标记，无需手动指定 `--promise`
 3. **新功能**：使用 `/sololoop:openspec +` 快速查看可用变更
-4. **StatusLine**：可选配置 StatusLine 实时显示循环状态
 
 ### v5 迁移指南
 

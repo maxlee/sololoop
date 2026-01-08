@@ -13,7 +13,7 @@ allowed-tools: Bash(*)
 - `<change-name>`: OpenSpec 变更名称（必需，或使用 `+` 列出可用变更）
 - `+`: 列出所有可用的 OpenSpec 变更
 - `--max N`: 最大迭代次数，默认 10
-- `--promise TEXT`: 完成标记文本，默认 DONE
+- `--promise TEXT`: 完成标记文本（可选，不设置则仅依赖最大迭代次数退出）
 
 ## 前置条件
 
@@ -28,7 +28,7 @@ allowed-tools: Bash(*)
 /sololoop:openspec +
 ```
 
-基本用法：
+基本用法（仅依赖最大迭代次数退出）：
 ```
 /sololoop:openspec feature-login
 ```
@@ -38,7 +38,7 @@ allowed-tools: Bash(*)
 /sololoop:openspec feature-login --max 20
 ```
 
-使用完成标记：
+使用完成标记（启用 Promise 退出机制）：
 ```
 /sololoop:openspec feature-login --promise "FEATURE_DONE"
 ```
@@ -55,17 +55,17 @@ allowed-tools: Bash(*)
 ## 工作流程
 
 1. 脚本检查 OpenSpec 目录和 tasks.md 文件是否存在
-2. 构建引用 tasks.md 的 prompt（包含 Promise 退出说明）
-3. 创建状态文件并启动迭代循环（默认 promise=DONE）
+2. 构建引用 tasks.md 的 prompt
+3. 创建状态文件并启动迭代循环
 4. 每次迭代时检查 tasks.md 中的复选框进度（仅作显示）
-5. 当 Claude 输出 `<promise>DONE</promise>` 时退出
+5. 根据退出条件决定是否继续
 
 ### 退出条件（优先级从高到低）
 
-1. **Promise 匹配**：输出 `<promise>完成标记</promise>` 匹配时退出
-2. **最大迭代**：达到最大迭代次数时强制退出（安全网）
+1. **Promise 匹配**（如设置了 `--promise`）：输出 `<promise>完成标记</promise>` 匹配时退出
+2. **最大迭代**：达到最大迭代次数时强制退出
 
-> **注意**：v6 版本中，复选框 100% 完成不再自动退出。Claude 需要自我审查后输出 promise 标记才能退出。
+> **注意**：v7 版本中，不再有默认的 Promise 值。如果不设置 `--promise` 参数，循环将仅依赖最大迭代次数退出。
 
 ### 与纯循环模式的区别
 
