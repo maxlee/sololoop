@@ -1,7 +1,7 @@
 {
   "name": "sololoop",
-  "version": "7.0.0",
-  "description": "顽强循环引擎 - 修复 hooks.json 格式，移除默认 Promise，符合官方规范",
+  "version": "8.0.0",
+  "description": "顽强循环引擎 v8 - 新增插件包装器模式、智能循环增强、Manus 最佳实践集成",
   "author": {
     "name": "maxlee",
     "url": "https://github.com/maxlee/sololoop"

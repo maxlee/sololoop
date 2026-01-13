@@ -1,19 +1,19 @@
 #!/bin/bash
 # ============================================================================
-# SoloLoop Setup Script - 初始化迭代循环
+# SoloLoop Wrap Plugin Script - 包装其他插件命令
 # ============================================================================
 #
 # 功能说明：
-#   解析命令行参数，创建状态文件，启动迭代循环。
+#   将 SoloLoop 的迭代循环能力应用到其他插件命令。
 #
 # 使用方法：
-#   /sololoop:sololoop "你的任务描述" --max 10 --promise "DONE"
+#   /sololoop:wrap "<plugin-command>" --max 10 --promise "DONE"
 #
 # 参数说明：
-#   PROMPT        任务描述（必需）
-#   --max <n>     最大迭代次数（默认：10）
-#   --promise <t> 完成标记文本
-#   --help        显示帮助信息
+#   "<plugin-command>"  要包装的插件命令（必需，需用引号包裹）
+#   --max <n>           最大迭代次数（默认：10）
+#   --promise <t>       完成标记文本
+#   --help              显示帮助信息
 #
 # ============================================================================
 
@@ -22,10 +22,9 @@ set -euo pipefail
 # ----------------------------------------------------------------------------
 # 默认值
 # ----------------------------------------------------------------------------
-PROMPT_PARTS=()
+PLUGIN_COMMAND=""
 MAX_ITERATIONS=10
 COMPLETION_PROMISE=""
-DEPRECATED_PARAM_USED=false
 
 # ----------------------------------------------------------------------------
 # 解析命令行参数
@@ -34,10 +33,10 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     -h|--help)
       cat << 'EOF'
-SoloLoop v8 - 纯粹的顽强循环引擎
+SoloLoop Wrap - 包装其他插件命令
 
 用法：
-  /sololoop:sololoop "任务描述" [选项]
+  /sololoop:wrap "<plugin-command>" [选项]
 
 选项：
   --max <n>       最大迭代次数（默认：10）
@@ -45,17 +44,20 @@ SoloLoop v8 - 纯粹的顽强循环引擎
   -h, --help      显示帮助
 
 示例：
-  /sololoop:sololoop "实现登录功能" --max 5
-  /sololoop:sololoop "重构代码" --promise "DONE" --max 20
+  /sololoop:wrap "@code-review:review src/"
+  /sololoop:wrap "@linter:fix ." --max 5
+  /sololoop:wrap "@test:run" --promise "ALL_TESTS_PASSED"
 
-退出条件（按优先级）：
+工作流程：
+  1. 创建状态文件，记录被包装的命令
+  2. 输出 Skill Tool 使用指令
+  3. Stop Hook 检测 wrap_mode，构造循环 prompt
+  4. 循环执行直到完成
+
+退出条件：
   1. 输出 <promise>完成标记</promise>
   2. 达到最大迭代次数
   3. 运行 /sololoop:cancel-sololoop
-
-规格驱动开发：
-  如需规格驱动的迭代循环，请使用 /sololoop:openspec 命令。
-  详见：/sololoop:openspec --help
 EOF
       exit 0
       ;;
@@ -75,40 +77,31 @@ EOF
       COMPLETION_PROMISE="$2"
       shift 2
       ;;
-    --plan)
-      DEPRECATED_PARAM_USED=true
-      echo "⚠️ 警告：--plan 参数已废弃 (deprecated)" >&2
-      echo "   请使用 /sololoop:openspec <change-name> 进行规格驱动开发" >&2
-      echo "" >&2
-      shift
-      ;;
-    --spec)
-      DEPRECATED_PARAM_USED=true
-      echo "⚠️ 警告：--spec 参数已废弃 (deprecated)" >&2
-      echo "   请使用 /sololoop:openspec <change-name> 进行规格驱动开发" >&2
-      echo "" >&2
-      shift
-      ;;
     *)
-      PROMPT_PARTS+=("$1")
+      # 第一个非选项参数作为 plugin-command
+      if [[ -z "$PLUGIN_COMMAND" ]]; then
+        PLUGIN_COMMAND="$1"
+      else
+        echo "❌ 错误：多余的参数 '$1'" >&2
+        echo "提示：plugin-command 需要用引号包裹" >&2
+        exit 1
+      fi
       shift
       ;;
   esac
 done
 
 # ----------------------------------------------------------------------------
-# 验证 prompt
+# 验证 plugin-command
 # ----------------------------------------------------------------------------
-PROMPT="${PROMPT_PARTS[*]:-}"
-if [[ -z "$PROMPT" ]]; then
-  echo "❌ 错误：请提供任务描述" >&2
-  echo "示例：/sololoop:sololoop \"实现登录功能\" --max 5" >&2
+if [[ -z "$PLUGIN_COMMAND" ]]; then
+  echo "❌ 错误：请提供要包装的插件命令" >&2
+  echo "示例：/sololoop:wrap \"@code-review:review src/\" --max 5" >&2
   exit 1
 fi
 
 # ----------------------------------------------------------------------------
 # 创建状态文件
-# 文件格式使用 YAML frontmatter，便于解析
 # v8: 添加 wrap_mode, wrapped_command, same_error_count, last_error, session_id
 # ----------------------------------------------------------------------------
 mkdir -p .claude
@@ -127,8 +120,8 @@ cat > .claude/sololoop.local.md << EOF
 iteration: 1
 max_iterations: $MAX_ITERATIONS
 completion_promise: $PROMISE_YAML
-wrap_mode: false
-wrapped_command: ""
+wrap_mode: true
+wrapped_command: "$PLUGIN_COMMAND"
 same_error_count: 0
 last_error: ""
 session_id: "$SESSION_ID"
@@ -137,14 +130,22 @@ interruption_count: 0
 last_interruption_type: null
 ---
 
-$PROMPT
+请使用 Skill Tool 执行以下命令：$PLUGIN_COMMAND
+
+每次迭代后，评估结果并决定是否需要继续改进。
 EOF
+
+# 添加 promise 指令（如果设置了）
+if [[ -n "$COMPLETION_PROMISE" ]]; then
+  echo "当任务完成时，输出 <promise>$COMPLETION_PROMISE</promise>" >> .claude/sololoop.local.md
+fi
 
 # ----------------------------------------------------------------------------
 # 输出启动信息
 # ----------------------------------------------------------------------------
-echo "🔄 SoloLoop v8 循环已启动！"
+echo "🔄 SoloLoop Wrap 模式已启动！"
 echo ""
+echo "包装命令：$PLUGIN_COMMAND"
 echo "迭代：1 / $MAX_ITERATIONS"
 if [[ -n "$COMPLETION_PROMISE" ]]; then
   echo "完成标记：$COMPLETION_PROMISE"
@@ -159,6 +160,9 @@ else
 fi
 echo "  - 运行 /sololoop:cancel-sololoop 取消"
 echo ""
-echo "--- 任务开始 ---"
+echo "--- Skill Tool 使用指令 ---"
 echo ""
-echo "$PROMPT"
+echo "请使用 Skill Tool 执行以下命令："
+echo "  $PLUGIN_COMMAND"
+echo ""
+echo "执行后评估结果，决定是否需要继续迭代改进。"

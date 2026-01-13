@@ -1,12 +1,17 @@
 #!/bin/bash
 # ============================================================================
-# SoloLoop Stop Hook - 迭代循环的核心脚本 (v6)
+# SoloLoop Stop Hook - 迭代循环的核心脚本 (v8)
 # ============================================================================
 #
 # 功能说明：
 #   当 Claude 完成响应并尝试停止时，此脚本会被自动调用。
 #   如果存在活动的 SoloLoop 循环，脚本会阻止停止并将相同的 prompt 反馈回去，
 #   让 Claude 继续在同一任务上迭代。
+#
+# v8 变更：
+#   - 新增重复失败检测：从 transcript 提取错误信息
+#   - 新增 same_error_count 状态追踪
+#   - 连续 3 次相同错误时显示策略调整建议
 #
 # v6 变更：
 #   - 移除复选框自动退出逻辑（复选框仅作进度指示器）
@@ -38,8 +43,84 @@ set -euo pipefail
 
 # ----------------------------------------------------------------------------
 # 常量定义 (v5: 移除 PLANNING_DIR 和 TASK_PLAN_FILE)
+# v8: 添加统计文件路径
 # ----------------------------------------------------------------------------
 STATE_FILE=".claude/sololoop.local.md"
+STATS_DIR="$HOME/.claude/sololoop"
+STATS_FILE="$STATS_DIR/stats.json"
+
+# ----------------------------------------------------------------------------
+# 统计更新函数 (v8 新增) - Requirements 4.1, 4.2, 4.3
+# 更新使用统计数据
+# 参数:
+#   $1 - exit_reason: promise_matched, max_iterations, user_cancelled
+#   $2 - iterations: 本次循环的迭代次数
+#   $3 - session_id: 会话 ID
+# ----------------------------------------------------------------------------
+update_stats() {
+  local exit_reason="${1:-unknown}"
+  local iterations="${2:-0}"
+  local session_id="${3:-}"
+  
+  # 检查 jq 是否可用
+  if ! command -v jq &>/dev/null; then
+    echo "⚠️ SoloLoop: jq 不可用，跳过统计更新" >&2
+    return 0
+  fi
+  
+  # 创建统计目录 - Requirements 4.1
+  mkdir -p "$STATS_DIR" 2>/dev/null || {
+    echo "⚠️ SoloLoop: 无法创建统计目录 $STATS_DIR" >&2
+    return 0
+  }
+  
+  # 初始化或读取统计文件
+  local stats
+  if [[ -f "$STATS_FILE" ]] && [[ -s "$STATS_FILE" ]]; then
+    stats=$(cat "$STATS_FILE" 2>/dev/null) || stats=""
+    # 验证 JSON 格式
+    if ! echo "$stats" | jq empty 2>/dev/null; then
+      echo "⚠️ SoloLoop: 统计文件损坏，重置为初始结构" >&2
+      stats=""
+    fi
+  fi
+  
+  # 如果统计文件不存在或为空，创建初始结构
+  if [[ -z "$stats" ]]; then
+    stats='{
+      "total_sessions": 0,
+      "total_iterations": 0,
+      "avg_iterations_per_session": 0,
+      "exit_reasons": {
+        "promise_matched": 0,
+        "max_iterations": 0,
+        "user_cancelled": 0
+      },
+      "last_session": "",
+      "sessions": []
+    }'
+  fi
+  
+  # 更新统计数据 - Requirements 4.2, 4.3
+  local new_stats
+  new_stats=$(echo "$stats" | jq \
+    --arg exit_reason "$exit_reason" \
+    --argjson iterations "$iterations" \
+    --arg session_id "$session_id" \
+    '
+    .total_sessions += 1 |
+    .total_iterations += $iterations |
+    .avg_iterations_per_session = ((.total_iterations) / .total_sessions) |
+    .exit_reasons[$exit_reason] = ((.exit_reasons[$exit_reason] // 0) + 1) |
+    .last_session = $session_id
+    ' 2>/dev/null)
+  
+  if [[ -n "$new_stats" ]]; then
+    echo "$new_stats" > "$STATS_FILE" 2>/dev/null || {
+      echo "⚠️ SoloLoop: 无法写入统计文件" >&2
+    }
+  fi
+}
 
 # ----------------------------------------------------------------------------
 # 读取 hook 输入
@@ -144,6 +225,22 @@ if [[ -z "$INTERRUPTION_COUNT" ]] || [[ ! "$INTERRUPTION_COUNT" =~ ^[0-9]+$ ]]; 
 fi
 
 # ----------------------------------------------------------------------------
+# 读取重复失败检测字段 (v8 新增) - Requirements 3.1, 3.2, 6.3, 6.4
+# ----------------------------------------------------------------------------
+SAME_ERROR_COUNT=$(echo "$FRONTMATTER" | grep '^same_error_count:' | sed 's/same_error_count: *//' || echo "0")
+LAST_ERROR=$(echo "$FRONTMATTER" | grep '^last_error:' | sed 's/last_error: *//' | sed 's/^"\(.*\)"$/\1/' || echo "")
+
+# 处理缺失的重复失败字段
+if [[ -z "$SAME_ERROR_COUNT" ]] || [[ ! "$SAME_ERROR_COUNT" =~ ^[0-9]+$ ]]; then
+  SAME_ERROR_COUNT=0
+fi
+
+# ----------------------------------------------------------------------------
+# 读取 session_id 字段 (v8 新增) - Requirements 6.5
+# ----------------------------------------------------------------------------
+SESSION_ID=$(echo "$FRONTMATTER" | grep '^session_id:' | sed 's/session_id: *//' | sed 's/^"\(.*\)"$/\1/' || echo "")
+
+# ----------------------------------------------------------------------------
 # 获取 transcript 路径并检查完成标记和中断状态
 # ----------------------------------------------------------------------------
 TRANSCRIPT_PATH=""
@@ -159,6 +256,7 @@ fi
 
 PROMISE_MATCHED=false
 INTERRUPTION_DETECTED=false
+CURRENT_ERROR=""
 
 if [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
   # 检查 transcript 文件是否为空
@@ -185,6 +283,22 @@ if [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]]; then
       if echo "$LAST_MESSAGES" | grep -qi 'interrupt'; then
         INTERRUPTION_DETECTED=true
       fi
+    fi
+    
+    # ----------------------------------------------------------------------------
+    # 错误检测 (v8 新增) - Requirements 3.1
+    # 从 transcript 提取最近的错误信息
+    # ----------------------------------------------------------------------------
+    if [[ "$JQ_AVAILABLE" == "true" ]]; then
+      # 提取最近 20 行中的错误信息
+      RECENT_LINES=$(tail -20 "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
+      # 查找包含 error, Error, ERROR, failed, Failed, FAILED 的行
+      CURRENT_ERROR=$(echo "$RECENT_LINES" | grep -iE '(error|failed|exception|cannot|unable to)' | tail -1 | \
+        jq -r '.message.content[0].text // .message // empty' 2>/dev/null | head -c 200 || echo "")
+    else
+      # jq 不可用时的备用方法
+      RECENT_LINES=$(tail -20 "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
+      CURRENT_ERROR=$(echo "$RECENT_LINES" | grep -iE '(error|failed|exception|cannot|unable to)' | tail -1 | head -c 200 || echo "")
     fi
     
     # ----------------------------------------------------------------------------
@@ -283,14 +397,32 @@ fi
 # 注意：v6 移除了复选框 100% 退出逻辑 - Requirements 2.1, 5.2
 # 复选框进度仅在 systemMessage 中显示
 
-# 如果满足退出条件，允许退出并清理状态文件 - Requirements 5.3, 5.4
+# 如果满足退出条件，允许退出并清理状态文件 - Requirements 5.3, 5.4, 7.1, 7.2
 if [[ "$EXIT_ALLOWED" == "true" ]]; then
+  # 构建 stopReason 消息 - Requirements 7.2
+  STOP_REASON=""
+  EXIT_REASON_CODE=""
   if [[ "$EXIT_REASON" == "完成标记匹配" ]]; then
-    echo "✅ SoloLoop: $EXIT_REASON"
+    STOP_REASON="✅ SoloLoop: 完成标记匹配"
+    EXIT_REASON_CODE="promise_matched"
   else
-    echo "🛑 SoloLoop: $EXIT_REASON"
+    STOP_REASON="🛑 SoloLoop: $EXIT_REASON"
+    EXIT_REASON_CODE="max_iterations"
   fi
+  
+  # 更新统计数据 (v8 新增) - Requirements 4.2, 4.3
+  update_stats "$EXIT_REASON_CODE" "$ITERATION" "$SESSION_ID"
+  
+  # 清理状态文件
   rm -f "$STATE_FILE"
+  
+  # 输出 JSON 格式的允许退出决策 - Requirements 7.1, 7.2
+  # decision: "allow" - 允许退出
+  # continue: false - 不继续执行
+  # stopReason: 完成状态消息
+  jq -n \
+    --arg stopReason "$STOP_REASON" \
+    '{"decision": "allow", "continue": false, "stopReason": $stopReason}'
   exit 0
 fi
 
@@ -312,18 +444,54 @@ else
   NEW_INTERRUPTION_TYPE="null"
 fi
 
+# ----------------------------------------------------------------------------
+# 更新重复失败状态 (v8 新增) - Requirements 3.2, 3.5
+# ----------------------------------------------------------------------------
+NEW_SAME_ERROR_COUNT=0
+NEW_LAST_ERROR=""
+
+if [[ -n "$CURRENT_ERROR" ]]; then
+  # 有错误检测到
+  if [[ "$CURRENT_ERROR" == "$LAST_ERROR" ]] && [[ -n "$LAST_ERROR" ]]; then
+    # 相同错误：递增计数 - Requirements 3.2
+    NEW_SAME_ERROR_COUNT=$((SAME_ERROR_COUNT + 1))
+  else
+    # 不同错误：重置计数为 1 - Requirements 3.5
+    NEW_SAME_ERROR_COUNT=1
+  fi
+  NEW_LAST_ERROR="$CURRENT_ERROR"
+else
+  # 无错误：重置计数 - Requirements 3.5
+  NEW_SAME_ERROR_COUNT=0
+  NEW_LAST_ERROR=""
+fi
+
 # 更新迭代计数和中断状态
 sed -e "s/^iteration: .*/iteration: $NEXT_ITERATION/" \
     -e "s/^interruption_count: .*/interruption_count: $NEW_INTERRUPTION_COUNT/" \
     -e "s/^last_interruption_type: .*/last_interruption_type: $NEW_INTERRUPTION_TYPE/" \
+    -e "s/^same_error_count: .*/same_error_count: $NEW_SAME_ERROR_COUNT/" \
     "$STATE_FILE" > "${STATE_FILE}.tmp"
+
+# 更新 last_error 字段（需要特殊处理因为可能包含特殊字符）
+if [[ -n "$NEW_LAST_ERROR" ]]; then
+  # 转义特殊字符用于 sed
+  ESCAPED_ERROR=$(printf '%s\n' "$NEW_LAST_ERROR" | sed 's/[&/\]/\\&/g' | tr '\n' ' ' | head -c 200)
+  sed -i.bak "s|^last_error: .*|last_error: \"$ESCAPED_ERROR\"|" "${STATE_FILE}.tmp"
+  rm -f "${STATE_FILE}.tmp.bak"
+else
+  sed -i.bak 's|^last_error: .*|last_error: ""|' "${STATE_FILE}.tmp"
+  rm -f "${STATE_FILE}.tmp.bak"
+fi
+
 mv "${STATE_FILE}.tmp" "$STATE_FILE"
 
 # ----------------------------------------------------------------------------
-# 构建 systemMessage (v5 新增, v6 更新)
+# 构建 systemMessage (v5 新增, v6 更新, v8 更新)
 # Requirements 2.6, 4.1, 4.2, 4.3, 4.4
 # systemMessage 包含迭代信息，reason 只包含原始 prompt
 # v6: 100% 完成时显示"等待完成标记"
+# v8: 重复失败时显示策略调整建议 - Requirements 3.3, 3.4
 # ----------------------------------------------------------------------------
 SYSTEM_MESSAGE="🔄 SoloLoop 迭代 $NEXT_ITERATION/$MAX_ITERATIONS"
 
@@ -334,6 +502,11 @@ if [[ -n "$OPENSPEC_PROGRESS_INFO" ]]; then
   if [[ "$ALL_OPENSPEC_CHECKBOXES_CHECKED" == "true" ]]; then
     SYSTEM_MESSAGE="$SYSTEM_MESSAGE | 等待完成标记"
   fi
+fi
+
+# v8: 重复失败策略调整建议 - Requirements 3.3, 3.4
+if [[ $NEW_SAME_ERROR_COUNT -ge 3 ]]; then
+  SYSTEM_MESSAGE="$SYSTEM_MESSAGE | ⚠️ 检测到连续 $NEW_SAME_ERROR_COUNT 次相同错误，建议换一种方法"
 fi
 
 # 添加 promise 提示
