@@ -3,13 +3,15 @@
 Claude Code 迭代循环插件，让 Claude 在同一任务上持续迭代直到完成。
 
 [![GitHub](https://img.shields.io/badge/GitHub-maxlee%2Fsololoop-blue)](https://github.com/maxlee/sololoop)
-[![Version](https://img.shields.io/badge/version-8.0.0-green)](https://github.com/maxlee/sololoop)
+[![Version](https://img.shields.io/badge/version-9.0.0-green)](https://github.com/maxlee/sololoop)
 
 ## 什么是 SoloLoop？
 
 SoloLoop 通过 Stop Hook 机制拦截 Claude 的退出尝试，将相同的 prompt 反复输入，实现自引用的迭代改进。
 
 **v8 增强版本**：新增插件包装器模式、会话恢复检测、重复失败检测、使用统计追踪。
+
+**v9 目标记忆版本**：新增目标记忆机制（PlanMem），提供目标锚定、周期性重锚、漂移检测功能，解决长时间自主执行中的目标遗忘和漂移问题。
 
 ```
 用户运行 /sololoop:sololoop "任务描述" --max 10
@@ -22,6 +24,17 @@ Stop Hook 拦截，检查 Promise 标记
     ↓
 重复直到 Promise 匹配或达到最大迭代次数
 ```
+
+### v9 目标记忆机制
+
+| 特性 | v8 | v9 |
+|------|----|----|
+| 目标记忆 | 无 | `.sololoop/` 目录存储目标锚点 |
+| 自动初始化 | 无 | 首次使用自动创建目标文件 |
+| 周期性重锚 | 无 | 每 N 次迭代强制重读目标 |
+| 漂移检测 | 无 | 检测输出是否偏离核心约束 |
+| 决策记录 | 无 | `/sololoop:log` 记录重要决策 |
+| 状态显示 | 无 | `/sololoop:status` 查看目标状态 |
 
 ### v8 核心增强
 
@@ -294,6 +307,132 @@ SoloLoop 提供 Manus 工作流最佳实践的 Steering 模板，包含：
 
 这帮助避免在同一问题上浪费迭代次数。
 
+### 🆕 v9 目标记忆机制
+
+v9 引入「目标记忆」机制（内部代号 PlanMem），解决长时间自主执行中的核心痛点：
+
+- **目标遗忘问题** - 运行 50~300+ 迭代后，非功能约束、原始取舍动机逐渐淡化
+- **跨会话恢复问题** - 隔天/隔周重启时，难以可靠恢复原始目标上下文
+- **目标漂移问题** - 长期养育型项目最容易发生「越跑越偏」
+
+#### 目标记忆自动激活
+
+目标记忆采用**首次使用自动初始化**模式，零配置即可使用：
+
+```bash
+# 直接使用 sololoop（首次自动初始化目标记忆）
+/sololoop:sololoop "完成用户认证功能，要求支持 OAuth2" --max 50
+
+# 目标记忆自动：
+# 1. 创建 .sololoop/ 目录
+# 2. 从 prompt 提取目标写入 goal.md
+# 3. 后续迭代中自动重锚和漂移检测
+```
+
+#### .sololoop/ 目录结构
+
+```
+.sololoop/
+├── goal.md              # 当前目标描述
+├── invariants.md        # 核心约束清单
+├── decisions-log.md     # 决策历史记录
+└── archived-goals/      # 历史目标归档
+```
+
+#### 目标文件模板
+
+**goal.md** - 当前目标：
+```markdown
+# Current Goal
+
+## Summary
+[从用户 prompt 自动提取或手动填写的目标摘要]
+
+## Success Criteria
+- [ ] 条件 1
+- [ ] 条件 2
+
+## Scope Boundaries
+- 包含: ...
+- 不包含: ...
+```
+
+**invariants.md** - 核心约束：
+```markdown
+# Core Invariants
+
+## Must Have
+- 关键约束 1
+- 关键约束 2
+
+## Must Not
+- 禁止事项 1
+- 禁止事项 2
+
+## Performance Constraints
+- 性能要求 1
+```
+
+#### 手动初始化（可选）
+
+```bash
+# 提前初始化目标记忆目录
+/sololoop:init
+
+# 然后手动编辑目标文件
+# .sololoop/goal.md
+# .sololoop/invariants.md
+```
+
+#### 周期性重锚
+
+每 15 次迭代（默认），Stop Hook 会自动将 `goal.md` 内容注入到 systemMessage，强制 Claude 重读目标：
+
+```
+🔄 SoloLoop 迭代 15/50 | [Goal Memory Active] | 重锚：请重新审视原始目标...
+```
+
+#### 漂移检测
+
+Stop Hook 会检测 Claude 的输出是否包含 `invariants.md` 中的关键词。如果连续多次输出都未提及核心约束，会添加漂移警告：
+
+```
+⚠️ 漂移警告：最近输出未提及核心约束，建议重读 goal.md
+```
+
+连续 3 次漂移警告后，会强制触发重锚。
+
+#### 决策记录
+
+记录执行过程中的重要决策：
+
+```bash
+# 添加决策记录
+/sololoop:log "决定使用方案 A 而非方案 B，因为性能更好"
+
+# 查看决策历史
+/sololoop:show-log
+```
+
+#### 状态显示
+
+查看当前目标记忆状态：
+
+```bash
+/sololoop:status
+```
+
+输出示例：
+```
+📋 SoloLoop 目标记忆状态
+
+当前目标: 完成用户认证功能
+迭代计数: 23/50
+重锚计数: 1
+漂移警告: 0
+最后活动: 2026-01-15T10:30:00Z
+```
+
 ### ⚠️ 废弃参数警告
 
 v5 已废弃以下参数，使用时会显示警告：
@@ -356,6 +495,38 @@ v5 已废弃以下参数，使用时会显示警告：
 
 无参数，显示 SoloLoop 使用统计信息。
 
+### /sololoop:init（🆕 v9 目标记忆初始化）
+
+手动初始化目标记忆目录，创建 `.sololoop/` 及模板文件。
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| 无 | 创建目录和模板文件 | - |
+
+### /sololoop:log（🆕 v9 决策记录）
+
+添加决策记录到 `.sololoop/decisions-log.md`。
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `<description>` | 决策描述文本（必需） | - |
+
+### /sololoop:show-log（🆕 v9 查看决策历史）
+
+显示最近的决策记录。
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| 无 | 显示最近决策记录 | - |
+
+### /sololoop:status（🆕 v9 目标状态）
+
+显示当前目标记忆状态。
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| 无 | 显示目标摘要、迭代计数、重锚计数等 | - |
+
 ### /sololoop:init-steering（Steering 模板初始化）
 
 无参数，将 Manus 最佳实践模板复制到项目的 `.claude/steering/` 目录。
@@ -403,23 +574,29 @@ SoloLoop v5 (轻量循环引擎)     OpenSpec (外部工具)
 
 > ⚠️ **v6 变更**：复选框 100% 完成不再作为退出条件，仅在 systemMessage 中显示进度。
 
-### 状态文件格式 (v8)
+### 状态文件格式 (v9)
 
 ```markdown
 ---
 iteration: 1
 max_iterations: 10
 completion_promise: "DONE"
-wrap_mode: false              # 🆕 v8: 包装器模式标记
-wrapped_command: ""           # 🆕 v8: 被包装的命令
-same_error_count: 0           # 🆕 v8: 连续相同错误计数
-last_error: ""                # 🆕 v8: 上次错误信息
-session_id: "abc123"          # 🆕 v8: 会话 ID
+wrap_mode: false              # v8: 包装器模式标记
+wrapped_command: ""           # v8: 被包装的命令
+same_error_count: 0           # v8: 连续相同错误计数
+last_error: ""                # v8: 上次错误信息
+session_id: "abc123"          # v8: 会话 ID
 openspec_mode: false
 openspec_tasks_file: ""
 started_at: "2026-01-13T10:30:00Z"
 interruption_count: 0
 last_interruption_type: null
+goal_memory_enabled: true     # 🆕 v9: 目标记忆启用状态
+iteration_since_anchor: 7     # 🆕 v9: 距上次重锚的迭代数
+anchor_interval: 15           # 🆕 v9: 重锚间隔
+drift_warning_count: 0        # 🆕 v9: 漂移警告计数
+total_anchors: 2              # 🆕 v9: 总重锚次数
+last_activity_timestamp: "2026-01-13T10:30:00Z"  # 🆕 v9: 最后活动时间
 ---
 
 原始 prompt 内容...
@@ -470,26 +647,38 @@ v8 增强了 Hook 输出，支持优雅退出和重复失败检测：
 ```
 sololoop/
 ├── .claude-plugin/
-│   ├── plugin.json          # 插件元数据（v8.0.0）
+│   ├── plugin.json          # 插件元数据（v9.0.0）
 │   └── marketplace.json     # Marketplace 配置
 ├── commands/
 │   ├── sololoop.md          # 纯循环命令
 │   ├── openspec.md          # OpenSpec 桥接命令
 │   ├── cancel-sololoop.md   # 取消命令
-│   ├── wrap.md              # 🆕 v8 插件包装器命令
-│   ├── stats.md             # 🆕 v8 统计命令
-│   └── init-steering.md     # 初始化 Steering 模板命令
+│   ├── wrap.md              # v8 插件包装器命令
+│   ├── stats.md             # v8 统计命令
+│   ├── init-steering.md     # 初始化 Steering 模板命令
+│   ├── init.md              # 🆕 v9 目标记忆初始化命令
+│   ├── log.md               # 🆕 v9 决策记录命令
+│   ├── show-log.md          # 🆕 v9 查看决策历史命令
+│   └── status.md            # 🆕 v9 目标状态命令
 ├── hooks/
-│   ├── hooks.json           # Hook 配置（v8: 新增 SessionStart）
-│   ├── stop-hook.sh         # Stop Hook 脚本（v8: 重复失败检测、统计更新）
-│   └── session-start.sh     # 🆕 v8 SessionStart Hook 脚本
+│   ├── hooks.json           # Hook 配置（v9: 目标记忆增强）
+│   ├── stop-hook.sh         # Stop Hook 脚本（v9: 重锚、漂移检测）
+│   └── session-start.sh     # SessionStart Hook 脚本（v9: 目标注入）
 ├── scripts/
-│   ├── setup-sololoop.sh    # 初始化脚本（v8: 扩展状态字段）
+│   ├── setup-sololoop.sh    # 初始化脚本（v9: 目标记忆字段）
 │   ├── openspec-bridge.sh   # OpenSpec 桥接脚本
 │   ├── cancel-sololoop.sh   # 取消脚本
-│   ├── wrap-plugin.sh       # 🆕 v8 包装器脚本
-│   ├── show-stats.sh        # 🆕 v8 统计显示脚本
-│   └── init-steering.sh     # Steering 模板初始化脚本
+│   ├── wrap-plugin.sh       # v8 包装器脚本
+│   ├── show-stats.sh        # v8 统计显示脚本
+│   ├── init-steering.sh     # Steering 模板初始化脚本
+│   ├── init-sololoop.sh     # 🆕 v9 目标记忆初始化脚本
+│   ├── log-decision.sh      # 🆕 v9 决策记录脚本
+│   ├── show-log.sh          # 🆕 v9 查看决策历史脚本
+│   └── show-status.sh       # 🆕 v9 目标状态脚本
+├── templates/               # 🆕 v9 目标文件模板目录
+│   ├── goal.md              # 目标模板
+│   ├── invariants.md        # 约束模板
+│   └── decisions-log.md     # 决策记录模板
 ├── steering/                # Steering 模板目录
 │   └── manus-rules.md       # Manus 最佳实践模板
 ├── tests/                   # 测试文件
@@ -499,20 +688,32 @@ sololoop/
 │   ├── cancel-sololoop.bats
 │   ├── command-format.bats
 │   ├── integration.bats
-│   ├── wrap-plugin.bats     # 🆕 v8 包装器测试
-│   ├── stats.bats           # 🆕 v8 统计测试
-│   ├── session-start.bats   # 🆕 v8 会话恢复测试
-│   ├── format-compliance-v8.bats  # 🆕 v8 格式合规测试
-│   ├── state-cleanup.bats   # 🆕 v8 状态清理测试
+│   ├── wrap-plugin.bats     # v8 包装器测试
+│   ├── stats.bats           # v8 统计测试
+│   ├── session-start.bats   # v8 会话恢复测试
+│   ├── format-compliance-v8.bats  # v8 格式合规测试
+│   ├── state-cleanup.bats   # v8 状态清理测试
+│   ├── init-sololoop.bats   # 🆕 v9 初始化测试
+│   ├── goal-memory-detection.bats  # 🆕 v9 目标记忆检测测试
+│   ├── re-anchoring.bats    # 🆕 v9 重锚测试
+│   ├── drift-detection.bats # 🆕 v9 漂移检测测试
+│   ├── decision-log.bats    # 🆕 v9 决策记录测试
+│   ├── backward-compat.bats # 🆕 v9 向后兼容测试
+│   ├── format-compliance-v9.bats  # 🆕 v9 格式合规测试
 │   └── helpers/
 └── README.md
 
 # 运行时生成的文件
 project/
-└── .claude/
-    └── sololoop.local.md    # 状态文件（v8: 扩展字段）
+├── .claude/
+│   └── sololoop.local.md    # 状态文件（v9: 目标记忆字段）
+└── .sololoop/               # 🆕 v9 目标记忆目录
+    ├── goal.md              # 当前目标
+    ├── invariants.md        # 核心约束
+    ├── decisions-log.md     # 决策历史
+    └── archived-goals/      # 历史目标归档
 
-# 全局统计文件（🆕 v8）
+# 全局统计文件（v8）
 ~/.claude/sololoop/
 └── stats.json               # 使用统计数据
 ```
@@ -532,10 +733,15 @@ project/
 | 进度不显示 | 确认 tasks.md 中使用标准复选框格式 `- [ ]` / `- [x]` |
 | 复选框 100% 但不退出 | 正常行为，需要输出 `<promise>DONE</promise>` 才能退出 |
 | `+` 触发符无输出 | 确认 `openspec/changes/` 目录存在 |
-| 🆕 wrap 命令无效 | 确认插件命令格式正确，需用引号包裹 |
-| 🆕 stats 无数据 | 首次使用，完成一次循环后会有统计数据 |
-| 🆕 会话恢复提示 | 正常行为，可继续或运行 `/sololoop:cancel-sololoop` 重新开始 |
-| 🆕 重复失败建议 | 连续 3 次相同错误时的正常提示，建议尝试不同方法 |
+| wrap 命令无效 | 确认插件命令格式正确，需用引号包裹 |
+| stats 无数据 | 首次使用，完成一次循环后会有统计数据 |
+| 会话恢复提示 | 正常行为，可继续或运行 `/sololoop:cancel-sololoop` 重新开始 |
+| 重复失败建议 | 连续 3 次相同错误时的正常提示，建议尝试不同方法 |
+| 🆕 目标记忆未激活 | 确认 `.sololoop/goal.md` 存在，或运行 `/sololoop:init` |
+| 🆕 重锚未触发 | 检查 `iteration_since_anchor` 是否达到 `anchor_interval`（默认 15） |
+| 🆕 漂移检测无效 | 确认 `.sololoop/invariants.md` 包含关键词 |
+| 🆕 决策记录失败 | 确认 `.sololoop/decisions-log.md` 存在且可写 |
+| 🆕 状态显示为空 | 运行 `/sololoop:init` 初始化目标记忆目录 |
 
 ---
 
@@ -769,6 +975,7 @@ claude --plugin-dir /path/to/plugin
 
 | 版本 | 主要特性 |
 |------|----------|
+| v9.0.0 | 目标记忆机制（PlanMem）：自动初始化、周期性重锚、漂移检测、决策记录、状态显示 |
 | v8.0.0 | 插件包装器模式、会话恢复检测、重复失败检测、使用统计追踪、优雅退出增强 |
 | v7.0.0 | 修复 hooks.json 格式符合官方规范、移除 OpenSpec 默认 Promise、Stop Hook 正常触发 |
 | v6.0.0 | Promise 驱动退出、`+` 触发符列出变更、默认 Promise 为 DONE、移除复选框自动退出 |
@@ -777,6 +984,26 @@ claude --plugin-dir /path/to/plugin
 | v3.0.0 | 中断恢复机制、`.sololoop/` 目录结构、严格退出条件、中断计数跟踪 |
 | v2.0.0 | 规划文件模式 (`--plan`)、复选框进度跟踪、task_plan.md/notes.md/deliverable.md |
 | v1.0.0 | 基础迭代循环、Stop Hook 机制、`--max` 和 `--promise` 参数 |
+
+### v9 迁移指南
+
+从 v8 迁移到 v9：
+
+1. **新增命令**：
+   - `/sololoop:init` - 手动初始化目标记忆目录
+   - `/sololoop:log` - 添加决策记录
+   - `/sololoop:show-log` - 查看决策历史
+   - `/sololoop:status` - 查看目标记忆状态
+
+2. **目标记忆目录**：首次使用 `/sololoop` 时自动创建 `.sololoop/` 目录
+
+3. **状态文件扩展**：新增 `goal_memory_enabled`、`iteration_since_anchor`、`anchor_interval`、`drift_warning_count`、`total_anchors`、`last_activity_timestamp` 字段
+
+4. **Hook 增强**：
+   - SessionStart Hook 自动注入目标文件内容
+   - Stop Hook 支持周期性重锚和漂移检测
+
+5. **向后兼容**：所有 v8 功能保持不变，无 `.sololoop/` 目录时行为与 v8 一致
 
 ### v8 迁移指南
 

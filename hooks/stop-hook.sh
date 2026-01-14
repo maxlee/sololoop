@@ -1,12 +1,19 @@
 #!/bin/bash
 # ============================================================================
-# SoloLoop Stop Hook - 迭代循环的核心脚本 (v8)
+# SoloLoop Stop Hook - 迭代循环的核心脚本 (v9)
 # ============================================================================
 #
 # 功能说明：
 #   当 Claude 完成响应并尝试停止时，此脚本会被自动调用。
 #   如果存在活动的 SoloLoop 循环，脚本会阻止停止并将相同的 prompt 反馈回去，
 #   让 Claude 继续在同一任务上迭代。
+#
+# v9 变更：
+#   - 新增目标记忆重锚功能：每 N 次迭代强制重读 goal.md
+#   - 新增 goal_memory_enabled 状态检测
+#   - 新增 iteration_since_anchor 计数器
+#   - 达到 anchor_interval 时注入 goal.md 到 systemMessage
+#   - 添加 "[Goal Memory Active]" 指示器
 #
 # v8 变更：
 #   - 新增重复失败检测：从 transcript 提取错误信息
@@ -29,6 +36,7 @@
 #   3. 如果需要继续，输出 JSON 格式的 block 决策
 #      - reason: 原始 prompt（纯净）
 #      - systemMessage: 迭代信息和进度
+#   4. 如果目标记忆启用，检查是否需要重锚
 #
 # 输入：
 #   通过 stdin 接收 JSON 格式的 hook 输入，包含 transcript_path 等信息
@@ -44,10 +52,14 @@ set -euo pipefail
 # ----------------------------------------------------------------------------
 # 常量定义 (v5: 移除 PLANNING_DIR 和 TASK_PLAN_FILE)
 # v8: 添加统计文件路径
+# v9: 添加目标记忆目录
 # ----------------------------------------------------------------------------
 STATE_FILE=".claude/sololoop.local.md"
 STATS_DIR="$HOME/.claude/sololoop"
 STATS_FILE="$STATS_DIR/stats.json"
+SOLOLOOP_DIR=".sololoop"
+GOAL_FILE="$SOLOLOOP_DIR/goal.md"
+INVARIANTS_FILE="$SOLOLOOP_DIR/invariants.md"
 
 # ----------------------------------------------------------------------------
 # 统计更新函数 (v8 新增) - Requirements 4.1, 4.2, 4.3
@@ -239,6 +251,32 @@ fi
 # 读取 session_id 字段 (v8 新增) - Requirements 6.5
 # ----------------------------------------------------------------------------
 SESSION_ID=$(echo "$FRONTMATTER" | grep '^session_id:' | sed 's/session_id: *//' | sed 's/^"\(.*\)"$/\1/' || echo "")
+
+# ----------------------------------------------------------------------------
+# 读取目标记忆字段 (v9 新增) - Requirements 3.1, 3.2, 7.1-7.6
+# ----------------------------------------------------------------------------
+GOAL_MEMORY_ENABLED=$(echo "$FRONTMATTER" | grep '^goal_memory_enabled:' | sed 's/goal_memory_enabled: *//' || echo "false")
+ITERATION_SINCE_ANCHOR=$(echo "$FRONTMATTER" | grep '^iteration_since_anchor:' | sed 's/iteration_since_anchor: *//' || echo "0")
+ANCHOR_INTERVAL=$(echo "$FRONTMATTER" | grep '^anchor_interval:' | sed 's/anchor_interval: *//' || echo "15")
+DRIFT_WARNING_COUNT=$(echo "$FRONTMATTER" | grep '^drift_warning_count:' | sed 's/drift_warning_count: *//' || echo "0")
+TOTAL_ANCHORS=$(echo "$FRONTMATTER" | grep '^total_anchors:' | sed 's/total_anchors: *//' || echo "0")
+
+# 处理缺失的目标记忆字段（向后兼容）
+if [[ -z "$GOAL_MEMORY_ENABLED" ]]; then
+  GOAL_MEMORY_ENABLED="false"
+fi
+if [[ -z "$ITERATION_SINCE_ANCHOR" ]] || [[ ! "$ITERATION_SINCE_ANCHOR" =~ ^[0-9]+$ ]]; then
+  ITERATION_SINCE_ANCHOR=0
+fi
+if [[ -z "$ANCHOR_INTERVAL" ]] || [[ ! "$ANCHOR_INTERVAL" =~ ^[0-9]+$ ]]; then
+  ANCHOR_INTERVAL=15
+fi
+if [[ -z "$DRIFT_WARNING_COUNT" ]] || [[ ! "$DRIFT_WARNING_COUNT" =~ ^[0-9]+$ ]]; then
+  DRIFT_WARNING_COUNT=0
+fi
+if [[ -z "$TOTAL_ANCHORS" ]] || [[ ! "$TOTAL_ANCHORS" =~ ^[0-9]+$ ]]; then
+  TOTAL_ANCHORS=0
+fi
 
 # ----------------------------------------------------------------------------
 # 获取 transcript 路径并检查完成标记和中断状态
@@ -466,11 +504,149 @@ else
   NEW_LAST_ERROR=""
 fi
 
+# ----------------------------------------------------------------------------
+# 漂移检测逻辑 (v9 新增) - Requirements 4.1, 4.2, 4.3, 4.4, 4.5, 4.6
+# 从 invariants.md 提取关键词，与最近输出对比
+# ----------------------------------------------------------------------------
+DRIFT_DETECTED=false
+DRIFT_WARNING_MESSAGE=""
+NEW_DRIFT_WARNING_COUNT=$DRIFT_WARNING_COUNT
+
+if [[ "$GOAL_MEMORY_ENABLED" == "true" ]] && [[ -f "$INVARIANTS_FILE" ]]; then
+  # 从 invariants.md 提取关键词 - Requirements 4.1
+  # 提取 "## Must Have" 和 "## Must Not" 部分的关键词
+  INVARIANT_KEYWORDS=""
+  if [[ -s "$INVARIANTS_FILE" ]]; then
+    # 提取非空行、非标题行、非分隔线的内容作为关键词
+    INVARIANT_KEYWORDS=$(grep -v '^#' "$INVARIANTS_FILE" 2>/dev/null | \
+      grep -v '^-*$' | \
+      grep -v '^$' | \
+      sed 's/^- //' | \
+      head -10 || echo "")
+  fi
+  
+  # 从 transcript_path 读取最近输出 - Requirements 4.1
+  if [[ -n "$TRANSCRIPT_PATH" ]] && [[ -f "$TRANSCRIPT_PATH" ]] && [[ -s "$TRANSCRIPT_PATH" ]] && [[ -n "$INVARIANT_KEYWORDS" ]]; then
+    # 提取最近 5 条 assistant 消息的文本内容
+    RECENT_OUTPUT=""
+    if [[ "$JQ_AVAILABLE" == "true" ]]; then
+      RECENT_OUTPUT=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -5 | \
+        jq -r '.message.content | map(select(.type == "text")) | map(.text) | join("\n")' 2>/dev/null | \
+        tr '\n' ' ' || echo "")
+    else
+      # jq 不可用时的备用方法
+      RECENT_OUTPUT=$(grep '"role":"assistant"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -5 || echo "")
+    fi
+    
+    # 对比关键词是否出现 - Requirements 4.2
+    if [[ -n "$RECENT_OUTPUT" ]]; then
+      KEYWORD_FOUND=false
+      while IFS= read -r keyword; do
+        # 跳过空行
+        [[ -z "$keyword" ]] && continue
+        # 提取关键词的核心词（去除标点和多余空格）
+        core_keyword=$(echo "$keyword" | sed 's/[[:punct:]]//g' | xargs)
+        [[ -z "$core_keyword" ]] && continue
+        # 检查关键词是否出现在最近输出中（不区分大小写）
+        if echo "$RECENT_OUTPUT" | grep -qi "$core_keyword"; then
+          KEYWORD_FOUND=true
+          break
+        fi
+      done <<< "$INVARIANT_KEYWORDS"
+      
+      # 未出现时递增 drift_warning_count 并添加警告 - Requirements 4.3, 4.5
+      if [[ "$KEYWORD_FOUND" == "false" ]]; then
+        DRIFT_DETECTED=true
+        NEW_DRIFT_WARNING_COUNT=$((DRIFT_WARNING_COUNT + 1))
+        DRIFT_WARNING_MESSAGE="
+
+⚠️ [漂移警告 #$NEW_DRIFT_WARNING_COUNT]
+
+检测到最近的输出可能偏离了核心约束。建议重新阅读目标文件：
+- .sololoop/goal.md - 当前目标
+- .sololoop/invariants.md - 核心约束"
+      else
+        # 关键词出现，重置漂移计数
+        NEW_DRIFT_WARNING_COUNT=0
+      fi
+    fi
+  fi
+fi
+
+# ----------------------------------------------------------------------------
+# 目标记忆重锚逻辑 (v9 新增) - Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 1.2.5
+# ----------------------------------------------------------------------------
+REANCHOR_TRIGGERED=false
+REANCHOR_MESSAGE=""
+NEW_ITERATION_SINCE_ANCHOR=$ITERATION_SINCE_ANCHOR
+NEW_TOTAL_ANCHORS=$TOTAL_ANCHORS
+FORCED_REANCHOR=false
+
+if [[ "$GOAL_MEMORY_ENABLED" == "true" ]]; then
+  # 递增 iteration_since_anchor - Requirements 3.1
+  NEW_ITERATION_SINCE_ANCHOR=$((ITERATION_SINCE_ANCHOR + 1))
+  
+  # 检查是否需要强制重锚（漂移计数 >= 3）- Requirements 4.6
+  if [[ $NEW_DRIFT_WARNING_COUNT -ge 3 ]]; then
+    REANCHOR_TRIGGERED=true
+    FORCED_REANCHOR=true
+    # 重置计数器并递增总重锚次数
+    NEW_ITERATION_SINCE_ANCHOR=0
+    NEW_TOTAL_ANCHORS=$((TOTAL_ANCHORS + 1))
+    # 重置漂移计数
+    NEW_DRIFT_WARNING_COUNT=0
+  # 检查是否达到重锚间隔 - Requirements 3.3
+  elif [[ $NEW_ITERATION_SINCE_ANCHOR -ge $ANCHOR_INTERVAL ]]; then
+    REANCHOR_TRIGGERED=true
+    # 重置计数器并递增总重锚次数 - Requirements 3.5
+    NEW_ITERATION_SINCE_ANCHOR=0
+    NEW_TOTAL_ANCHORS=$((TOTAL_ANCHORS + 1))
+  fi
+  
+  # 读取 goal.md 内容并注入到 systemMessage - Requirements 3.4
+  if [[ "$REANCHOR_TRIGGERED" == "true" ]]; then
+    if [[ -f "$GOAL_FILE" ]]; then
+      GOAL_CONTENT=$(cat "$GOAL_FILE" 2>/dev/null || echo "")
+      if [[ -n "$GOAL_CONTENT" ]]; then
+        if [[ "$FORCED_REANCHOR" == "true" ]]; then
+          REANCHOR_MESSAGE="
+
+🚨 [Goal Memory 强制重锚 #$NEW_TOTAL_ANCHORS - 连续漂移触发]
+
+由于连续 3 次检测到漂移，强制重新锚定到原始目标：
+
+$GOAL_CONTENT
+
+---
+请仔细审视：当前的工作方向是否与上述目标一致？请立即调整方向以符合原始目标。"
+        else
+          REANCHOR_MESSAGE="
+
+🎯 [Goal Memory Re-anchoring #$NEW_TOTAL_ANCHORS]
+
+请重新审视当前目标，确保你的工作方向与原始目标一致：
+
+$GOAL_CONTENT
+
+---
+请自我评估：当前的工作方向是否与上述目标一致？如有偏离，请调整方向。"
+        fi
+      fi
+    fi
+  fi
+fi
+
 # 更新迭代计数和中断状态
+# v9: 同时更新 last_activity_timestamp 和 drift_warning_count
+CURRENT_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 sed -e "s/^iteration: .*/iteration: $NEXT_ITERATION/" \
     -e "s/^interruption_count: .*/interruption_count: $NEW_INTERRUPTION_COUNT/" \
     -e "s/^last_interruption_type: .*/last_interruption_type: $NEW_INTERRUPTION_TYPE/" \
     -e "s/^same_error_count: .*/same_error_count: $NEW_SAME_ERROR_COUNT/" \
+    -e "s/^iteration_since_anchor: .*/iteration_since_anchor: $NEW_ITERATION_SINCE_ANCHOR/" \
+    -e "s/^total_anchors: .*/total_anchors: $NEW_TOTAL_ANCHORS/" \
+    -e "s/^drift_warning_count: .*/drift_warning_count: $NEW_DRIFT_WARNING_COUNT/" \
+    -e "s/^last_activity_timestamp: .*/last_activity_timestamp: \"$CURRENT_TIMESTAMP\"/" \
     "$STATE_FILE" > "${STATE_FILE}.tmp"
 
 # 更新 last_error 字段（需要特殊处理因为可能包含特殊字符）
@@ -487,13 +663,19 @@ fi
 mv "${STATE_FILE}.tmp" "$STATE_FILE"
 
 # ----------------------------------------------------------------------------
-# 构建 systemMessage (v5 新增, v6 更新, v8 更新)
+# 构建 systemMessage (v5 新增, v6 更新, v8 更新, v9 更新)
 # Requirements 2.6, 4.1, 4.2, 4.3, 4.4
 # systemMessage 包含迭代信息，reason 只包含原始 prompt
 # v6: 100% 完成时显示"等待完成标记"
 # v8: 重复失败时显示策略调整建议 - Requirements 3.3, 3.4
+# v9: 添加 [Goal Memory Active] 指示器和重锚消息 - Requirements 1.2.5, 3.4, 3.6
 # ----------------------------------------------------------------------------
 SYSTEM_MESSAGE="🔄 SoloLoop 迭代 $NEXT_ITERATION/$MAX_ITERATIONS"
+
+# v9: 添加 [Goal Memory Active] 指示器 - Requirements 1.2.5
+if [[ "$GOAL_MEMORY_ENABLED" == "true" ]]; then
+  SYSTEM_MESSAGE="$SYSTEM_MESSAGE | [Goal Memory Active]"
+fi
 
 # 添加 OpenSpec 进度信息
 if [[ -n "$OPENSPEC_PROGRESS_INFO" ]]; then
@@ -507,6 +689,16 @@ fi
 # v8: 重复失败策略调整建议 - Requirements 3.3, 3.4
 if [[ $NEW_SAME_ERROR_COUNT -ge 3 ]]; then
   SYSTEM_MESSAGE="$SYSTEM_MESSAGE | ⚠️ 检测到连续 $NEW_SAME_ERROR_COUNT 次相同错误，建议换一种方法"
+fi
+
+# v9: 添加漂移警告消息 - Requirements 4.3, 4.4
+if [[ "$DRIFT_DETECTED" == "true" ]] && [[ -n "$DRIFT_WARNING_MESSAGE" ]] && [[ "$REANCHOR_TRIGGERED" == "false" ]]; then
+  SYSTEM_MESSAGE="$SYSTEM_MESSAGE$DRIFT_WARNING_MESSAGE"
+fi
+
+# v9: 添加重锚消息 - Requirements 3.4, 3.6
+if [[ "$REANCHOR_TRIGGERED" == "true" ]] && [[ -n "$REANCHOR_MESSAGE" ]]; then
+  SYSTEM_MESSAGE="$SYSTEM_MESSAGE$REANCHOR_MESSAGE"
 fi
 
 # 添加 promise 提示

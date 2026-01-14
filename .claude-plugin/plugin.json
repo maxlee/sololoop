@@ -1,13 +1,13 @@
 {
   "name": "sololoop",
-  "version": "8.0.0",
-  "description": "顽强循环引擎 v8 - 新增插件包装器模式、智能循环增强、Manus 最佳实践集成",
+  "version": "9.0.0",
+  "description": "顽强循环引擎 v9 - 新增目标记忆机制（Goal Memory）、周期性重锚、漂移检测、决策记录功能",
   "author": {
     "name": "maxlee",
     "url": "https://github.com/maxlee/sololoop"
   },
   "repository": "https://github.com/maxlee/sololoop",
   "license": "MIT",
-  "keywords": ["iteration", "loop", "productivity", "openspec", "promise"],
+  "keywords": ["iteration", "loop", "productivity", "openspec", "promise", "goal-memory", "anchoring"],
   "hooks": "./hooks/hooks.json"
 }

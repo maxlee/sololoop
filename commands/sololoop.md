@@ -1,5 +1,5 @@
 ---
-description: "启动 SoloLoop 迭代循环 - 纯粹的顽强循环引擎"
+description: "启动 SoloLoop 迭代循环 - 纯粹的顽强循环引擎（带目标记忆）"
 argument-hint: "PROMPT [--max N] [--promise TEXT]"
 allowed-tools: Bash(*)
 ---
@@ -7,6 +7,7 @@ allowed-tools: Bash(*)
 # SoloLoop 命令
 
 启动迭代循环，让 Claude 在同一任务上持续工作直到完成。
+v9 新增目标记忆功能，首次使用时自动初始化。
 
 ## 参数说明
 
@@ -55,6 +56,15 @@ allowed-tools: Bash(*)
 ## 工作流程
 
 循环启动后，请开始处理任务。当你尝试退出时，Stop Hook 会将相同的 prompt 反馈回来，让你继续迭代改进。
+
+### 目标记忆（v9 新功能）
+
+首次运行 `/sololoop` 时，会自动初始化目标记忆：
+- 创建 `.sololoop/` 目录结构
+- 从 prompt 提取目标写入 `goal.md`
+- 后续迭代中自动重锚和漂移检测
+
+如需手动初始化，可使用 `/sololoop:init` 命令。
 
 ### 退出条件（优先级从高到低）
 
